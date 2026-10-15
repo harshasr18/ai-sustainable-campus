@@ -272,15 +272,55 @@ export const IssueSchema = z.object({
 });
 export type Issue = z.infer<typeof IssueSchema>;
 
+/**
+ * Issue queue filters.
+ *
+ * Phase 3 §12 asks for severity and date-range filtering. Both are supported by the query
+ * rather than approximated in the browser: filtering a page of results client-side would
+ * report a `total` that does not match what is on screen, which is worse than not offering
+ * the filter at all (recorded as gap G4 in docs/PHASE3_AUDIT.md before it was closed here).
+ */
 export const ListIssuesQuerySchema = z.object({
   status: IssueStatusSchema.optional(),
   blockId: z.uuid().optional(),
   categoryId: z.uuid().optional(),
   claimedByUserId: z.uuid().optional(),
   overdueOnly: z.coerce.boolean().optional(),
+  /**
+   * Operational severity. `UNSET` selects issues with no severity recorded — a sentinel, so
+   * that "not yet triaged" is reachable in the UI. Omitted means no severity filter at all,
+   * which is why the sentinel is needed rather than relying on an empty value.
+   */
+  severity: z.union([SeveritySchema, z.literal('UNSET')]).optional(),
+  /** Matches issues with at least one report carrying this AI severity. A filter, not a value. */
+  anyReportAiSeverity: SeveritySchema.optional(),
+  /** ISO instants. Inclusive lower bound, exclusive upper bound. */
+  createdAfter: z.string().datetime({ offset: true }).optional(),
+  createdBefore: z.string().datetime({ offset: true }).optional(),
   /** Bounded pagination — brief Section 8 forbids unbounded queries. */
   limit: z.coerce.number().int().min(1).max(100).default(25),
   offset: z.coerce.number().int().min(0).default(0),
+});
+
+/**
+ * Human confirmation of an issue's operational severity (Phase 3 gap G2).
+ *
+ * `null` is accepted and clears the value. It is NOT the same as omitting the field: an
+ * explicit null means "we looked and decided there is no severity", which an operator may
+ * legitimately need to record after a re-triage.
+ *
+ * This writes `issues.severity` — the operational column. It never touches
+ * `reports.ai_severity`, so the model's opinion survives the human's decision.
+ */
+export const SetIssueSeverityRequestSchema = z.object({
+  severity: SeveritySchema.nullable(),
+  reason: z.string().trim().max(1000).optional(),
+});
+
+/** Correction of a mis-filed category (Phase 3 gap G3). The student's own choice is not rewritten. */
+export const SetIssueCategoryRequestSchema = z.object({
+  categoryId: z.uuid(),
+  reason: z.string().trim().max(1000).optional(),
 });
 export type ListIssuesQuery = z.infer<typeof ListIssuesQuerySchema>;
 
@@ -396,6 +436,11 @@ export const EVENT_TYPES = [
   'report.duplicate_candidate_found',
   'report.linked_to_master_issue',
   'report.duplicate_rejected',
+  /* Phase 3 — human corrections to the operational record. Separate verbs because neither is
+     a status transition: an event consumer replaying the log must not see a status change
+     that never happened. Migration 0008 adds the matching CHECK-constraint entries. */
+  'issue.severity_changed',
+  'issue.category_changed',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 

@@ -111,3 +111,14 @@ export function assertCanViewIssueQueue(role: Role): void {
     throw forbidden('Only HOD or ADMIN users can browse the full issue queue.');
   }
 }
+
+/**
+ * Guard for operational edits that are neither a status transition nor a claim — confirming
+ * severity, correcting a category. Same authority as the rest of the operational surface:
+ * HOD and ADMIN only, decided HERE rather than in a route handler or the UI.
+ */
+export function assertCanOperate(role: Role): void {
+  if (!(role === 'HOD' || role === 'ADMIN')) {
+    throw forbidden('Only HOD or ADMIN users can change the operational record of an issue.');
+  }
+}

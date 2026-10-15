@@ -1,0 +1,156 @@
+/**
+ * Base layer: reset, document defaults, accessibility primitives.
+ *
+ * Deliberately small. A hand-written reset rather than a normalise/normalize dependency,
+ * because the project rule is "add dependencies only when justified" and this is 40 lines.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+* {
+  margin: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  color: var(--text);
+  background: var(--surface-sunken);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+}
+
+img,
+svg,
+video,
+canvas {
+  display: block;
+  max-width: 100%;
+}
+
+input,
+button,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+a {
+  color: var(--green-600);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  line-height: var(--leading-tight);
+  font-weight: 650;
+  letter-spacing: -0.011em;
+}
+
+/* --- Focus: always visible, never removed. Keyboard users exist. --- */
+:focus-visible {
+  outline: 2px solid var(--green-500);
+  outline-offset: 2px;
+}
+
+/* --- Screen-reader-only text, for icon-only controls and live regions --- */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* --- Skip link: the first tab stop, so a keyboard user can bypass the sidebar --- */
+.skip-link {
+  position: absolute;
+  left: var(--space-4);
+  top: -60px;
+  z-index: 100;
+  background: var(--green-700);
+  color: var(--white);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius);
+  transition: top var(--transition-fast);
+}
+
+.skip-link:focus {
+  top: var(--space-4);
+}
+
+/* --- Boot splash, until React replaces #root --- */
+.boot-splash {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  min-height: 70vh;
+}
+
+.boot-splash__mark {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-full);
+  border: 3px solid var(--green-200, #b3d7c3);
+  border-top-color: var(--green-600, #1d6345);
+  animation: boot-spin 0.7s linear infinite;
+}
+
+@keyframes boot-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.boot-splash__text {
+  font-size: var(--text-sm);
+  color: var(--text-muted, #647076);
+}

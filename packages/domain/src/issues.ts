@@ -15,6 +15,7 @@ import {
   tokenCreditIdempotencyKey,
   type IssueStatus,
   type Role,
+  type Severity,
 } from '@campus/contracts';
 import {
   audit as auditRepo,
@@ -26,7 +27,7 @@ import {
   type Db,
   type Tx,
 } from '@campus/db';
-import { assertCanClaim, assertTransition } from './state-machine.js';
+import { assertCanClaim, assertCanOperate, assertTransition } from './state-machine.js';
 import { computeDedupeKey, type DedupeGranularity } from './dedupe.js';
 import { awardForValidatedReport, isTokenEligible } from './tokens.js';
 import { alreadyClaimed, forbidden, notFound, validationFailed, workspaceViolation } from './errors.js';
@@ -523,6 +524,10 @@ export async function listIssues(
     categoryId?: string | undefined;
     claimedByUserId?: string | undefined;
     overdueOnly?: boolean | undefined;
+    severity?: string | undefined;
+    anyReportAiSeverity?: string | undefined;
+    createdAfter?: string | undefined;
+    createdBefore?: string | undefined;
     limit: number;
     offset: number;
   },
@@ -552,6 +557,129 @@ export function canReadEvidence(actor: Actor, report: { reporter_user_id: string
  */
 export function assertSameWorkspace(sessionWorkspaceId: string, targetWorkspaceId: string): void {
   if (sessionWorkspaceId !== targetWorkspaceId) throw workspaceViolation();
+}
+
+/* ------------------------------------------------------------------ */
+/* Human corrections to the operational record (Phase 3, gaps G2/G3)  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Confirms the OPERATIONAL severity of an issue.
+ *
+ * WHY THIS IS A SEPARATE COLUMN AND A SEPARATE FUNCTION. `reports.ai_severity` holds what the
+ * model suggested; `issues.severity` holds what a person decided. The brief requires the two
+ * to stay distinguishable, so this function writes only the second and never touches the
+ * first. A department that downgrades a CRITICAL because the photograph exaggerated the
+ * crack still has the model's original call on the record.
+ *
+ * Writes history, audit and an event in the SAME transaction as the change, matching every
+ * other mutation in this module. Published only after the write succeeds.
+ */
+export async function setIssueSeverity(
+  db: Db,
+  actor: Actor,
+  input: { issueId: string; severity: Severity | null; reason?: string | undefined },
+): Promise<{ issue: ReturnType<typeof toIssueDto>; previousSeverity: Severity | null }> {
+  assertCanOperate(actor.role);
+
+  return db.withTransaction(async (tx) => {
+    // Lock first, so two HODs triaging the same issue cannot interleave.
+    const current = await issueRepo.lockForUpdate(tx, actor.workspaceId, input.issueId);
+    if (!current) throw notFound('Issue not found in your campus.');
+
+    const previousSeverity = (current.severity as Severity | null) ?? null;
+    if (previousSeverity === input.severity) {
+      // No-op changes are rejected rather than recorded: an audit log full of
+      // "severity: HIGH -> HIGH" entries makes the real changes harder to find.
+      throw validationFailed(
+        'This is already the recorded severity. Choose a different value or leave it unchanged.',
+      );
+    }
+
+    const updated = await issueRepo.setSeverity(tx, actor.workspaceId, input.issueId, input.severity);
+
+    await auditRepo.record(tx, {
+      workspaceId: actor.workspaceId,
+      actorUserId: actor.userId,
+      action: 'issue.severity_changed',
+      entityType: 'ISSUE',
+      entityId: input.issueId,
+      before: { severity: previousSeverity },
+      after: { severity: input.severity },
+      reason: input.reason ?? null,
+    });
+
+    await outboxPublisher.publish(tx, {
+      eventType: 'issue.severity_changed',
+      workspaceId: actor.workspaceId,
+      workspace: actor.workspaceKind,
+      entityType: 'ISSUE',
+      entityId: input.issueId,
+      entityVersion: updated.version,
+      actorUserId: actor.userId,
+      payload: { issueId: input.issueId, previousSeverity, severity: input.severity },
+    });
+
+    return { issue: toIssueDto(updated), previousSeverity };
+  });
+}
+
+/**
+ * Corrects the category on an issue.
+ *
+ * The reporting student's `reports.selected_category_id` is deliberately NOT rewritten. What
+ * a student said they saw is evidence, and the correction is recorded alongside it rather
+ * than over it.
+ */
+export async function setIssueCategory(
+  db: Db,
+  actor: Actor,
+  input: { issueId: string; categoryId: string; reason?: string | undefined },
+): Promise<{ issue: ReturnType<typeof toIssueDto>; previousCategoryId: string }> {
+  assertCanOperate(actor.role);
+
+  return db.withTransaction(async (tx) => {
+    const current = await issueRepo.lockForUpdate(tx, actor.workspaceId, input.issueId);
+    if (!current) throw notFound('Issue not found in your campus.');
+
+    // The target must be a real, ACTIVE category. Validated server-side rather than trusting
+    // the client's id: a stale form or a hand-made request could otherwise assign an inactive
+    // category that no longer appears anywhere in the UI.
+    if (!(await campusRepo.categoryExists(tx, input.categoryId))) {
+      throw notFound('That category does not exist or is no longer active.');
+    }
+
+    if (current.category_id === input.categoryId) {
+      throw validationFailed('This issue already has that category.');
+    }
+
+    const previousCategoryId = current.category_id;
+    const updated = await issueRepo.setCategory(tx, actor.workspaceId, input.issueId, input.categoryId);
+
+    await auditRepo.record(tx, {
+      workspaceId: actor.workspaceId,
+      actorUserId: actor.userId,
+      action: 'issue.category_changed',
+      entityType: 'ISSUE',
+      entityId: input.issueId,
+      before: { categoryId: previousCategoryId },
+      after: { categoryId: input.categoryId },
+      reason: input.reason ?? null,
+    });
+
+    await outboxPublisher.publish(tx, {
+      eventType: 'issue.category_changed',
+      workspaceId: actor.workspaceId,
+      workspace: actor.workspaceKind,
+      entityType: 'ISSUE',
+      entityId: input.issueId,
+      entityVersion: updated.version,
+      actorUserId: actor.userId,
+      payload: { issueId: input.issueId, previousCategoryId, categoryId: input.categoryId },
+    });
+
+    return { issue: toIssueDto(updated), previousCategoryId };
+  });
 }
 
 export { TOKEN_POLICY };

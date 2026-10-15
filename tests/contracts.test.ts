@@ -102,12 +102,14 @@ describe('AI adapter contract — the boundary exists and fails honestly', () =>
 });
 
 describe('Real-time contract — defined, durable, and NOT claimed as live', () => {
-  it('declares the Phase 1 event types plus the Phase 2 AI events, and nothing else', () => {
+  it('declares the Phase 1, Phase 2 and Phase 3 event types, and nothing else', () => {
     /**
-     * REWRITTEN FOR PHASE 2 (audit risk R9). Phase 1 asserted exactly nine types; the
-     * brief's §17 adds seven AI-pipeline events. The assertion is kept EXACT on purpose:
-     * adding an event type must be a deliberate act that updates this list, which is
-     * what stops a typo in an event name reaching the outbox unnoticed.
+     * REWRITTEN FOR PHASE 2 (audit risk R9), EXTENDED FOR PHASE 3. Phase 1 asserted exactly
+     * nine types; the Phase 2 brief §17 added seven AI-pipeline events; Phase 3 adds two
+     * human-correction verbs. The assertion is kept EXACT on purpose: adding an event type
+     * must be a deliberate act that updates this list, which is what stops a typo in an event
+     * name reaching the outbox unnoticed (the outbox CHECK constraint is the second guard —
+     * see migration 0008).
      */
     const phase1 = [
       'report.created',
@@ -129,7 +131,13 @@ describe('Real-time contract — defined, durable, and NOT claimed as live', () 
       'report.linked_to_master_issue',
       'report.duplicate_rejected',
     ];
-    expect(ALL_EVENTS).toEqual([...phase1, ...phase2Ai]);
+    const phase3HumanCorrections = [
+      // Neither is a status change: an operator confirming a severity or fixing a category
+      // must not appear in the event log as though the lifecycle moved.
+      'issue.severity_changed',
+      'issue.category_changed',
+    ];
+    expect(ALL_EVENTS).toEqual([...phase1, ...phase2Ai, ...phase3HumanCorrections]);
     // Every Phase 1 verb survives untouched — clients written against them still work.
     for (const verb of phase1) expect(ALL_EVENTS).toContain(verb);
   });

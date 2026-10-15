@@ -27,6 +27,7 @@ import { registerTokenRoutes } from './routes/tokens.js';
 import { registerAdminRoutes } from './routes/admin.js';
 import { registerIntegrationRoutes } from './routes/integrations.js';
 import { registerAnalysisRoutes } from './routes/analysis.js';
+import { registerAnalyticsRoutes } from './routes/analytics.js';
 import { registerConsoleRoute } from './routes/console.js';
 
 export interface BuildAppOptions {
@@ -164,6 +165,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   registerAdminRoutes(app, { db });
   registerIntegrationRoutes(app, { db, ai, realtimeEnabled: options.realtimeEnabled ?? false });
   registerAnalysisRoutes(app, { db, ai });
+  registerAnalyticsRoutes(app, { db });
   // Development-only browser console at `/`. Never registered in production.
   registerConsoleRoute(app, { config });
 

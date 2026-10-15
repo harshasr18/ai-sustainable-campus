@@ -345,9 +345,25 @@ export const reports = {
     return { items: items.rows, total: Number(total.rows[0]!.n) };
   },
 
-  async listForIssue(conn: Conn, workspaceId: string, issueId: string): Promise<ReportRow[]> {
-    const r = await conn.query<ReportRow>(
-      `SELECT * FROM reports WHERE workspace_id = $1 AND issue_id = $2 ORDER BY submitted_at ASC`,
+  /**
+   * Every report attached to an issue, oldest first.
+   *
+   * `reporter_display_name` is joined in because the issue detail screen has to show a HOD who
+   * filed each report (Phase 3 gap G1). The name — not the email, and never the storage key.
+   * The ORDER BY is ASC so the original report that CREATED the ticket is first, which is the
+   * one an operator usually wants to read.
+   */
+  async listForIssue(
+    conn: Conn,
+    workspaceId: string,
+    issueId: string,
+  ): Promise<(ReportRow & { reporter_display_name: string | null })[]> {
+    const r = await conn.query<ReportRow & { reporter_display_name: string | null }>(
+      `SELECT r.*, u.display_name AS reporter_display_name
+         FROM reports r
+         LEFT JOIN users u ON u.id = r.reporter_user_id
+        WHERE r.workspace_id = $1 AND r.issue_id = $2
+        ORDER BY r.submitted_at ASC`,
       [workspaceId, issueId],
     );
     return r.rows;
@@ -583,6 +599,12 @@ export const issues = {
       categoryId?: string;
       claimedByUserId?: string;
       overdueOnly?: boolean;
+      /** Operational severity, as confirmed by a human. `UNSET` selects the unset rows. */
+      severity?: string;
+      createdAfter?: string;
+      createdBefore?: string;
+      /** Filters on the reports' AI verdict — see the note on `anyReportAiSeverity`. */
+      anyReportAiSeverity?: string;
       limit: number;
       offset: number;
     },
@@ -600,6 +622,35 @@ export const issues = {
     if (filters.claimedByUserId) add('i.claimed_by_user_id = $?', filters.claimedByUserId);
     // Overdue derives from the CONFIGURED due_at, so no threshold is hardcoded here.
     if (filters.overdueOnly) where.push(`i.status <> 'RESOLVED' AND i.due_at < now()`);
+
+    // Severity filtering (Phase 3 gap G4). 'UNSET' is a sentinel for "no severity recorded",
+    // because a NULL is not equal to anything and a filter that silently matched nothing
+    // would look like a bug to the operator using it.
+    if (filters.severity === 'UNSET') {
+      where.push('i.severity IS NULL');
+    } else if (filters.severity) {
+      add('i.severity = $?', filters.severity);
+    }
+
+    // Date range on the SERVER-RECORDED created_at. Inclusive bounds; the client sends ISO
+    // instants. `created_before` is exclusive-at-the-end by convention so a day range
+    // expressed as [start, end) cannot double-count a boundary row.
+    if (filters.createdAfter) add('i.created_at >= $?', filters.createdAfter);
+    if (filters.createdBefore) add('i.created_at < $?', filters.createdBefore);
+
+    /**
+     * AI severity lives on REPORTS, not on issues, and an issue may have several reports with
+     * differing verdicts. EXISTS is used rather than a join so the issue is returned once and
+     * `total` stays a count of issues rather than of matching reports — a join here would
+     * inflate both and quietly break pagination.
+     */
+    if (filters.anyReportAiSeverity) {
+      add(
+        `EXISTS (SELECT 1 FROM reports ar
+                  WHERE ar.issue_id = i.id AND ar.ai_severity = $?)`,
+        filters.anyReportAiSeverity,
+      );
+    }
 
     const whereSql = `WHERE ${where.join(' AND ')}`;
 
@@ -694,6 +745,48 @@ export const issues = {
     // report `reportCount: 0` while GET /v1/issues/:id reported the real count.
     // That inconsistency is exactly what makes a mobile app and a website disagree,
     // so every issue response now comes from one projection function.
+    return (await issues.findById(conn, workspaceId, issueId))!;
+  },
+
+  /**
+   * Sets the HUMAN-CONFIRMED operational severity on an issue (Phase 3 gap G2).
+   *
+   * This column is deliberately separate from `reports.ai_severity`: the model's opinion and
+   * the department's decision are different facts and must never overwrite each other. The
+   * route that calls this records who decided and why.
+   *
+   * `version` is bumped and `updated_at` touched so an optimistic client can detect that the
+   * issue moved underneath it.
+   */
+  async setSeverity(
+    conn: Conn,
+    workspaceId: string,
+    issueId: string,
+    severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | null,
+  ): Promise<IssueRow> {
+    await conn.query(
+      `UPDATE issues SET severity = $3, version = version + 1, updated_at = now()
+        WHERE id = $1 AND workspace_id = $2`,
+      [issueId, workspaceId, severity],
+    );
+    // Re-read through the enriched projection so `report_count` and
+    // `claimed_by_display_name` are present, exactly as applyTransition does.
+    return (await issues.findById(conn, workspaceId, issueId))!;
+  },
+
+  /**
+   * Corrects the category on an issue (Phase 3 gap G3).
+   *
+   * §10 allows an HOD to correct a mis-filed report. The correction changes the ISSUE's
+   * category only; the reporting student's original choice (`reports.selected_category_id`)
+   * is never rewritten, because the record of what a student reported is evidence.
+   */
+  async setCategory(conn: Conn, workspaceId: string, issueId: string, categoryId: string): Promise<IssueRow> {
+    await conn.query(
+      `UPDATE issues SET category_id = $3, version = version + 1, updated_at = now()
+        WHERE id = $1 AND workspace_id = $2`,
+      [issueId, workspaceId, categoryId],
+    );
     return (await issues.findById(conn, workspaceId, issueId))!;
   },
 
