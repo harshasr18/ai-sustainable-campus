@@ -1143,6 +1143,67 @@ export const aiAnalyses = {
   },
 
   /** Counts for the admin dashboard, scoped to one workspace. */
+  /**
+   * Reports that still need an analysis — the background worker's work queue.
+   *
+   * THE ATTEMPT BUDGET IS THE POINT OF THIS QUERY. A successful analysis writes the
+   * report's `ai_*` columns but deliberately does NOT touch `validation_status`,
+   * because that column means "a human has ruled on this" and the AI is never allowed
+   * to rule on anything (§17). So an analysed report stays PENDING forever, and a
+   * worker that simply asked for "PENDING reports" would pick the same ones up on every
+   * poll, re-running inference for the life of the process.
+   *
+   * The termination signal is therefore not a status change — it is the analysis
+   * HISTORY, which already records every attempt:
+   *
+   *   1. a report that has produced a usable answer (SUCCEEDED or NEEDS_HUMAN_REVIEW)
+   *      is never analysed again, so a second worker, a restart, or a manual retry
+   *      cannot produce a duplicate analysis;
+   *   2. a report whose FAILED attempts have reached the configured limit is left
+   *      alone, so a permanently broken image costs three attempts and then stops
+   *      rather than burning the CPU on every tick;
+   *   3. a report with no photograph can never be analysed, so it is not queued at all.
+   *
+   * Ordering by `submitted_at` makes the queue FIFO, so the oldest waiting student is
+   * served first and a burst of submissions drains in the order it arrived.
+   */
+  async listAwaitingAnalysis(
+    conn: Conn,
+    workspaceId: string,
+    maxAttempts: number,
+    limit = 5,
+  ): Promise<Array<{ reportId: string; workspaceKind: 'REAL' | 'DEMO' }>> {
+    const r = await conn.query<{ report_id: string; workspace_kind: 'REAL' | 'DEMO' }>(
+      `SELECT r.id AS report_id, w.kind AS workspace_kind
+         FROM reports r
+         JOIN workspaces w ON w.id = r.workspace_id
+        WHERE r.workspace_id = $1
+          AND r.validation_status = 'PENDING'
+          AND r.evidence_storage_key IS NOT NULL
+          AND NOT EXISTS (
+                SELECT 1 FROM ai_analyses done
+                 WHERE done.report_id = r.id
+                   AND done.status IN ('SUCCEEDED', 'NEEDS_HUMAN_REVIEW')
+              )
+          AND (SELECT count(*) FROM ai_analyses tried
+                WHERE tried.report_id = r.id
+                  AND tried.status = 'FAILED') < $2
+        ORDER BY r.submitted_at
+        LIMIT $3`,
+      [workspaceId, maxAttempts, limit],
+    );
+    return r.rows.map((row) => ({ reportId: row.report_id, workspaceKind: row.workspace_kind }));
+  },
+
+  /** How many attempts a report has already had, for reporting without re-querying rows. */
+  async attemptCount(conn: Conn, workspaceId: string, reportId: string): Promise<number> {
+    const r = await conn.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM ai_analyses WHERE workspace_id = $1 AND report_id = $2`,
+      [workspaceId, reportId],
+    );
+    return Number(r.rows[0]?.n ?? 0);
+  },
+
   async statusCounts(conn: Conn, workspaceId: string): Promise<Record<string, number>> {
     const r = await conn.query<{ status: string; n: string }>(
       `SELECT DISTINCT ON (report_id) status, count(*) OVER () AS n

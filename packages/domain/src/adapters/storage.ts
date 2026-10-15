@@ -40,6 +40,24 @@ export interface EvidenceStorage {
   readonly kind: string;
 }
 
+/**
+ * Resolves an opaque evidence reference (as produced by `toReference`) back to bytes.
+ *
+ * Only this function knows how a reference maps onto a storage adapter, so the AI layer
+ * can be handed a reader without ever seeing a path, a URL, or the database. It lives
+ * beside `toReference` rather than at the call site because the two form one convention
+ * — the `kind://` prefix — and splitting them across files is how a prefix and its
+ * parser drift apart.
+ *
+ * Callers MUST have authorized the caller before reading. This function checks nothing:
+ * it is the last step of a permission check that already happened.
+ */
+export function readEvidenceRef(storage: EvidenceStorage, reference: string): Promise<Buffer> {
+  const prefix = `${storage.kind}://`;
+  const key = reference.startsWith(prefix) ? reference.slice(prefix.length) : reference;
+  return storage.read(key);
+}
+
 /* --------------------------- content sniffing ------------------------------ */
 
 /**

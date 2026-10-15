@@ -75,7 +75,40 @@ export async function createPgliteDb(dataDir?: string): Promise<Db> {
   }
   // In-memory when no dataDir: each test file gets a pristine, isolated database.
   const db: PGlite = dataDir ? new PGlite(dataDir) : new PGlite();
-  await db.waitReady;
+
+  /*
+   * AN UNOPENABLE DATA DIRECTORY IS A DIAGNOSIS, NOT A CRASH.
+   *
+   * PGlite reports every failure to start as "PGlite failed to initialize properly",
+   * with no cause attached. That message is misleading in the one situation that
+   * actually produces it: a data directory that was COPIED WHILE THE DATABASE WAS
+   * RUNNING. A PostgreSQL cluster is only consistent once the process has shut down
+   * cleanly, so a directory captured mid-write (by a file sync, a snapshot, a backup
+   * script, or a hard kill) is left with a WAL that cannot be replayed, and the next
+   * start refuses to open it.
+   *
+   * The failure is therefore re-thrown with the cause named and the recovery spelled
+   * out. Nothing here ever deletes or repairs the directory on its own: silently
+   * discarding a database because it failed to open would be far worse than the
+   * original error.
+   */
+  try {
+    await db.waitReady;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `The PGlite data directory at "${dataDir}" could not be opened.\n\n` +
+        `  Reason given by the engine: ${detail}\n\n` +
+        '  The usual cause is a data directory that was copied or snapshotted while the\n' +
+        '  database was still running, which leaves it inconsistent and unopenable.\n\n' +
+        '  If the data in it is disposable (a local development or DEMO database):\n' +
+        `      npm run db:reset          # rebuilds "${dataDir}", migrates, seeds campus data\n\n` +
+        '  If you need to keep it for inspection, move it aside instead — the original\n' +
+        '  files are preserved and a new cluster is created on the next start:\n' +
+        `      mv ${dataDir} ${dataDir}.unreadable\n\n` +
+        '  To use a different location, set PGLITE_DIR in .env.',
+    );
+  }
 
   /**
    * Dev-time deadlock guard.

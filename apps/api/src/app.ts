@@ -14,6 +14,7 @@ import { validatorCompiler } from 'fastify-type-provider-zod';
 import {
   createAiAnalyzerAsync,
   LocalEvidenceStorage,
+  readEvidenceRef,
   type AiAnalyzer,
   type EvidenceStorage,
 } from '@campus/domain';
@@ -170,15 +171,4 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   registerConsoleRoute(app, { config });
 
   return app;
-}
-
-/**
- * Resolves an opaque evidence reference (as produced by `storage.toReference`) back to
- * bytes. Only this function knows how a reference maps onto a storage adapter, so the
- * AI layer can be handed a reader without ever seeing a path, a URL, or the database.
- */
-function readEvidenceRef(storage: EvidenceStorage, reference: string): Promise<Buffer> {
-  const prefix = `${storage.kind}://`;
-  const key = reference.startsWith(prefix) ? reference.slice(prefix.length) : reference;
-  return storage.read(key);
 }

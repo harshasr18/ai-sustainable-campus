@@ -17,3 +17,10 @@ storage/tmp/
 # Sandbox/environment artefacts — not part of the project.
 .npm/
 .sudo_as_admin_successful
+
+# Verification output: browser screenshots and traces written by tools/smoke-web.mjs.
+# Useful to look at, never source.
+.artifacts/
+
+# A data directory that failed to open, kept for inspection by `npm run db:reset --keep`.
+.data/*.unreadable/
