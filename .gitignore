@@ -1,0 +1,19 @@
+node_modules/
+.data/
+dist/
+.env
+.env.local
+.env.*.local
+storage/evidence/
+*.log
+coverage/
+.DS_Store
+Thumbs.db
+
+# Model weights and other caches — large, reproducible, never committed.
+.cache/
+storage/tmp/
+
+# Sandbox/environment artefacts — not part of the project.
+.npm/
+.sudo_as_admin_successful
