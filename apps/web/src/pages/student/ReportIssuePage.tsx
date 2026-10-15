@@ -55,6 +55,21 @@ export function ReportIssuePage() {
   const [spotId, setSpotId] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [description, setDescription] = useState('');
+  /*
+   * THE TITLE IS REQUIRED BY THE API, AND THIS FORM USED TO NEVER SEND ONE.
+   *
+   * `CreateReportRequestSchema` requires `title` (5-160 characters). The form collected a
+   * description but no title, so EVERY submission from the app was rejected with 400
+   * VALIDATION_FAILED — while every backend test and the API smoke test passed, because they
+   * post `title` themselves. Found only when the whole journey was driven through this screen
+   * in a real browser (tools/e2e-journey.mjs).
+   *
+   * It is prefilled with the chosen category's name when the student reaches the review step,
+   * as a visible, editable suggestion — the student sees exactly what will be sent and can
+   * change it. It is never filled in silently behind their back.
+   */
+  const [title, setTitle] = useState('');
+  const [titleTouched, setTitleTouched] = useState(false);
   const [coords, setCoords] = useState<{ latitude: number; longitude: number } | null>(null);
   const [geoNote, setGeoNote] = useState<string | null>(null);
 
@@ -101,7 +116,10 @@ export function ReportIssuePage() {
   const canLeavePhotoStep = camera.photo !== null;
   const canLeaveLocationStep = Boolean(blockId && spotId);
   const canLeaveCategoryStep = Boolean(categoryId);
-  const canSubmit = canLeavePhotoStep && canLeaveLocationStep && canLeaveCategoryStep && !submitting;
+  const trimmedTitle = title.trim();
+  // Same limits as CreateReportRequestSchema; the server re-checks them regardless.
+  const titleValid = trimmedTitle.length >= 5 && trimmedTitle.length <= 160;
+  const canSubmit = canLeavePhotoStep && canLeaveLocationStep && canLeaveCategoryStep && titleValid && !submitting;
 
   const currentIndex = useMemo(() => STEPS.findIndex((s) => s.key === step), [step]);
 
@@ -126,6 +144,7 @@ export function ReportIssuePage() {
       form.append('blockId', blockId);
       form.append('spotId', spotId);
       form.append('selectedCategoryId', categoryId);
+      form.append('title', trimmedTitle);
       if (description.trim()) form.append('description', description.trim());
       if (coords) {
         // Sent as strings: multipart fields are text, and the server coerces + validates them.
@@ -435,7 +454,11 @@ export function ReportIssuePage() {
               type="button"
               className="btn btn--primary"
               disabled={!canLeaveCategoryStep}
-              onClick={() => setStep('review')}
+              onClick={() => {
+                // Suggest a title from the category unless the student has typed their own.
+                if (!titleTouched && selectedCategory) setTitle(selectedCategory.name);
+                setStep('review');
+              }}
             >
               Continue
             </button>
@@ -471,6 +494,29 @@ export function ReportIssuePage() {
                   {coords ? `${coords.latitude}, ${coords.longitude}` : <span className="muted">Not captured</span>}
                 </dd>
               </dl>
+
+              <div className="field mt-4">
+                <label className="field__label" htmlFor="title">
+                  Short title<span className="field__required" aria-hidden="true">*</span>
+                </label>
+                <input
+                  id="title"
+                  className={`input${titleValid ? '' : ' input--invalid'}`}
+                  maxLength={160}
+                  value={title}
+                  onChange={(event) => {
+                    setTitle(event.target.value);
+                    setTitleTouched(true);
+                  }}
+                  aria-invalid={!titleValid}
+                  aria-describedby="title-hint"
+                />
+                <p id="title-hint" className={titleValid ? 'field__hint' : 'field__error'}>
+                  {titleValid
+                    ? 'Suggested from the category — edit it to say what you saw.'
+                    : 'Between 5 and 160 characters.'}
+                </p>
+              </div>
 
               <div className="field mt-4">
                 <label className="field__label" htmlFor="description">

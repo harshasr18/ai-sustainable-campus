@@ -201,10 +201,13 @@ export function ReportDetailPage() {
 
               {issue.data.issue.reportCount > 1 && (
                 <div className="mt-4">
-                  <InlineAlert variant="info" title="Other students reported this too">
-                    {issue.data.issue.reportCount} reports are attached to this one repair ticket. Your
-                    report is still yours, with its own photograph and its own token credit — they were
-                    merged so the department fixes the problem once instead of three times.
+                  {/* Wording is deliberately factual. It used to say "Other students reported this
+                      too" (the same student can file twice), promised "its own token credit" (a
+                      rejected report earns none) and said "three times" whatever the count was. */}
+                  <InlineAlert variant="info" title={`Reported ${issue.data.issue.reportCount} times`}>
+                    {issue.data.issue.reportCount} reports are attached to this one repair ticket, so the
+                    department fixes the problem once. Your report stays separate, with its own photograph,
+                    and is validated on its own — a validated report earns its own credit.
                   </InlineAlert>
                 </div>
               )}

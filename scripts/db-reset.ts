@@ -14,6 +14,8 @@
  *   - It will not run when NODE_ENV=production.
  *   - It will not touch a remote database. DATABASE_URL must be absent or a loopback
  *     address; anything else is refused before a single statement is issued.
+ *   - It never DROPS a native PostgreSQL database. With DATABASE_URL set it only migrates
+ *     and seeds, and says so. Only a PGlite directory is actually rebuilt.
  *   - It will not delete a directory that is not recognisably a PGlite cluster. If
  *     the configured path contains something else, the script stops and says what it
  *     found rather than removing it. A reset script that can be pointed at the wrong
@@ -92,6 +94,29 @@ async function main(): Promise<void> {
     return;
   }
 
+  /* ---------------------------------------------------------------- */
+  /* Guard 3 — never while the API is running                          */
+  /* ---------------------------------------------------------------- */
+  /*
+   * With PGlite the running API holds the data directory open. On Windows a delete then
+   * fails part-way with EBUSY, leaving a half-removed cluster that will not open; on Linux
+   * it "succeeds" while the live server keeps writing to deleted files. Either way the
+   * result is worse than refusing, so the health endpoint is probed first.
+   */
+  try {
+    const response = await fetch(`http://127.0.0.1:${config.port}/healthz`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    if (response.ok) {
+      console.error(`REFUSED: the API is running on port ${config.port}. Stop it first (Ctrl+C in`);
+      console.error('         its terminal), then re-run. Nothing has been changed.');
+      process.exitCode = 1;
+      return;
+    }
+  } catch {
+    // Nothing listening — the expected case.
+  }
+
   const pgliteDir = resolve(config.pgliteDir ?? '.data/campus');
   const usingNative = Boolean(config.databaseUrl);
 
@@ -138,9 +163,20 @@ async function main(): Promise<void> {
         console.log('Discarded        : old cluster removed');
       }
     }
-  } else if (dryRun) {
-    console.log('DRY RUN — nothing was changed. Re-run without --dry-run to drop and rebuild.');
-    return;
+  } else {
+    /*
+     * Native PostgreSQL is NOT dropped by this script. Dropping a database needs a superuser
+     * connection to a different database and is a decision an operator should take on purpose,
+     * so here the script only migrates and seeds what is already there — and says so, rather
+     * than letting "reset" imply a clean slate it did not produce.
+     */
+    console.log('Native PostgreSQL: existing data is KEPT. This run only migrates and seeds.');
+    console.log('To start from empty, drop and recreate the database first (docs/RUNBOOK.md §6).');
+    if (dryRun) {
+      console.log('');
+      console.log('DRY RUN — nothing was changed.');
+      return;
+    }
   }
 
   /* ---------------------------------------------------------------- */

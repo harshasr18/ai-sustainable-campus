@@ -17,14 +17,19 @@
     "db:reset:dry": "tsx scripts/db-reset.ts --dry-run",
     "dev": "tsx watch apps/api/src/server.ts",
     "start": "tsx apps/api/src/server.ts",
+    "web": "npm run dev -w @campus/web",
+    "web:build": "npm run build -w @campus/web",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:web": "npm run typecheck -w @campus/web",
     "ai:warm": "tsx scripts/ai-warm.ts",
     "ai:eval-prompts": "node scripts/ai-eval-prompts.mjs",
     "worker:verify": "node tools/verify-worker.mjs",
     "smoke:api": "node scripts/smoke-test.mjs",
-    "smoke:web": "node tools/smoke-web.mjs"
+    "smoke:web": "node tools/smoke-web.mjs",
+    "e2e": "node tools/e2e-journey.mjs",
+    "screens": "node tools/screens.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.10",

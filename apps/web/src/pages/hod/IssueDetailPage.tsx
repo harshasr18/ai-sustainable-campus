@@ -362,7 +362,10 @@ export function IssueDetailPage() {
                   </button>
                 )}
 
-                {issue.status !== 'RESOLVED' && (
+                {/* Only from IN_PROGRESS — the state machine's sole route to RESOLVED. This used to show
+                    for every unresolved status, so in SUBMITTED/APPROVED it offered an action the server
+                    always refuses (409). A control that cannot succeed is not shown. */}
+                {issue.status === 'IN_PROGRESS' && (
                   <button
                     type="button"
                     className="btn btn--secondary"
@@ -514,6 +517,7 @@ function ReportRow({
   onValidate: () => void;
   canValidate: boolean;
 }) {
+  const [showPhoto, setShowPhoto] = useState(false);
   const analysis = useAsync(
     (signal) =>
       api
@@ -525,7 +529,7 @@ function ReportRow({
   const a = analysis.data?.analysis ?? null;
 
   return (
-    <div className="report-row report-row--stacked">
+    <div className="report-row report-row--stacked" data-report-id={report.id}>
       <ReportThumb reportId={report.id} hasEvidence={report.hasEvidence} size={88} />
       <div className="report-row__main">
         <p className="report-row__title">
@@ -570,15 +574,23 @@ function ReportRow({
             Validate…
           </button>
         )}
-        <a
-          className="btn btn--ghost btn--sm"
-          href={`/v1/reports/${report.id}/evidence`}
-          target="_blank"
-          rel="noreferrer"
-        >
-          Full photo
-        </a>
+        {/* This was `<a href="/v1/reports/:id/evidence" target="_blank">`. A plain link cannot
+            carry the session's bearer token, so it could only ever open a 401 page — measured,
+            not assumed. The full photo now opens in a dialog through the same authorised loader
+            (lib/evidence.ts) as the thumbnail, so it also reuses the bytes already fetched. */}
+        {report.hasEvidence && (
+          <button type="button" className="btn btn--ghost btn--sm" onClick={() => setShowPhoto(true)}>
+            Full photo
+          </button>
+        )}
       </div>
+
+      {showPhoto && (
+        <Modal title="Report photograph" onClose={() => setShowPhoto(false)}>
+          <ReportThumb reportId={report.id} hasEvidence={report.hasEvidence} size="fluid" className="detail-photo" />
+          <p className="small muted mt-3 mb-0">Private evidence. Visible only to the reporter and campus staff.</p>
+        </Modal>
+      )}
     </div>
   );
 }
