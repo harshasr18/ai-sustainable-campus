@@ -40,7 +40,7 @@
  * model later would find nothing left to do.
  */
 
-import type { AiAnalyzer } from '@campus/domain';
+import { PERMANENT_AI_FAILURE_CODES, type AiAnalyzer } from '@campus/domain';
 import { aiAnalyses as analysisRepo, type Db } from '@campus/db';
 import { runAnalysis } from './routes/analysis.js';
 
@@ -104,7 +104,13 @@ export function createAnalysisWorker(options: AnalysisWorkerOptions): AnalysisWo
     );
 
     for (const workspace of workspaces.rows) {
-      const queued = await analysisRepo.listAwaitingAnalysis(db, workspace.id, maxAttempts, batchSize);
+      const queued = await analysisRepo.listAwaitingAnalysis(
+        db,
+        workspace.id,
+        maxAttempts,
+        batchSize,
+        PERMANENT_AI_FAILURE_CODES,
+      );
 
       for (const item of queued) {
         result.considered += 1;

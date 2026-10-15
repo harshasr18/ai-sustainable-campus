@@ -147,7 +147,7 @@ export function ReportDetailPage() {
             <ReportThumb
               reportId={data.id}
               hasEvidence={data.hasEvidence}
-              size={320}
+              size="fluid"
               className="detail-photo"
             />
             <p className="small muted mt-3 mb-0">

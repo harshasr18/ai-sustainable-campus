@@ -7,11 +7,18 @@
  * the student's own choice. The server decides this; the client never re-derives it from a
  * confidence number it has been given. `GET /v1/admin/review-queue` is the authority.
  *
- * THE HONEST EMPTY STATE. When no AI provider is configured — the default in this deployment
- * — this queue is genuinely empty because nothing has been assessed, which is a completely
- * different fact from "everything has been reviewed". The page checks `/v1/admin/ai/status`
- * and says which of the two it is. An empty queue presented as "all clear" would be a
- * fabricated reassurance.
+ * THE HONEST EMPTY STATE. When no AI provider is configured this queue is genuinely empty
+ * because nothing has been assessed, which is a completely different fact from "everything
+ * has been reviewed". An empty queue presented as "all clear" would be a fabricated
+ * reassurance, so the page reports the AI's own state alongside the list — read from the
+ * `ai` block of THIS response.
+ *
+ * WHY NOT `/v1/admin/ai/status`, WHICH IS WHERE THAT FACT ORIGINALLY CAME FROM. That route
+ * is ADMIN-only, so an HOD opening this page received a 403 and a console error on a screen
+ * that is entirely theirs. Every request a page makes has to be one its role may make. The
+ * fix is not to loosen the guard — /ai/status answers "how is this deployment configured",
+ * which is an operator's question — but to have the queue answer its own reviewer's question:
+ * one request, the right information, no permissions widened.
  *
  * WHAT THIS PAGE DELIBERATELY DOES NOT DO. It does not offer a "Merge" or "Confirm duplicate"
  * button, because §11's merge/reject decision endpoints do not exist yet (audit gap G5). A
@@ -23,7 +30,7 @@
 import { Link } from 'react-router-dom';
 import { api, query } from '../../lib/api.js';
 import { useAsync } from '../../lib/useAsync.js';
-import type { AiStatus, ReviewQueueItem } from '../../lib/types.js';
+import type { ReviewQueueResponse } from '../../lib/types.js';
 import { Card } from '../../components/data.js';
 import { EmptyPane, ErrorPane, InlineAlert, SkeletonRows } from '../../components/states.js';
 import { AiTag } from '../../components/badges.js';
@@ -39,17 +46,14 @@ export function ReviewQueuePage() {
 
   const queue = useAsync(
     (signal) =>
-      api.get<{ count: number; items: ReviewQueueItem[] }>(
-        `/v1/admin/review-queue${query({ limit: LIMIT })}`,
-        { signal },
-      ),
+      api.get<ReviewQueueResponse>(`/v1/admin/review-queue${query({ limit: LIMIT })}`, { signal }),
     [],
   );
-  const aiStatus = useAsync((signal) => api.get<AiStatus>('/v1/admin/ai/status', { signal }), []);
 
   const items = queue.data?.items ?? [];
   const truncated = (queue.data?.count ?? 0) >= LIMIT;
-  const aiConfigured = aiStatus.data?.configured ?? null;
+  const ai = queue.data?.ai;
+  const aiConfigured = ai?.configured ?? null;
 
   return (
     <>
@@ -67,12 +71,12 @@ export function ReviewQueuePage() {
         </Link>
       </div>
 
-      {aiStatus.data && !aiStatus.data.configured && (
+      {ai && !ai.configured && (
         <div className="mb-5">
           <InlineAlert variant="info" title="No AI provider is configured on this server">
             Nothing has been assessed, so nothing is waiting here — this is not a clean bill of
-            health. Provider is <code className="mono">{aiStatus.data.provider}</code>, model{' '}
-            <code className="mono">{aiStatus.data.model}</code>. Set{' '}
+            health. Provider is <code className="mono">{ai.provider}</code>, model{' '}
+            <code className="mono">{ai.model}</code>. Set{' '}
             <code className="mono">AI_PROVIDER</code> to run analysis; see{' '}
             <span className="mono">docs/AI_MODEL.md</span>.
           </InlineAlert>
@@ -112,7 +116,7 @@ export function ReviewQueuePage() {
             Showing {items.length}
             {truncated ? `+ (the endpoint returns at most ${LIMIT})` : ''} of{' '}
             {queue.data?.count ?? 0} awaiting review
-            {aiStatus.data ? ` · review threshold ${aiStatus.data.humanReviewConfidenceThreshold}` : ''}.
+            {ai ? ` · review threshold ${ai.humanReviewConfidenceThreshold}` : ''}.
           </p>
 
           <div className="stack stack--4">

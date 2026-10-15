@@ -51,6 +51,22 @@ export type AiFailureCode =
   | 'AI_EVIDENCE_NOT_FOUND'
   | 'AI_NOT_CONFIGURED';
 
+/**
+ * Failure codes that no amount of retrying can fix: the photograph itself is unusable, the
+ * evidence is gone, or the model's output cannot be trusted. The background worker reads this
+ * list to stop after ONE attempt instead of spending its full retry budget on a report that
+ * will fail identically every time (.env.example: "A permanent failure is never retried").
+ *
+ * Kept here, beside the error classes, so adding a permanent error type and forgetting to
+ * list it is visible in one file rather than in a SQL string elsewhere.
+ */
+export const PERMANENT_AI_FAILURE_CODES: readonly AiFailureCode[] = [
+  'AI_INVALID_EVIDENCE',
+  'AI_EVIDENCE_NOT_FOUND',
+  'AI_MALFORMED_OUTPUT',
+  'AI_UNSUPPORTED_CATEGORY',
+];
+
 /** Raised when the provider returned something that failed schema validation. */
 export class AiMalformedOutputError extends AiPermanentError {
   constructor(message: string) {

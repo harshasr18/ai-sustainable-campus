@@ -74,6 +74,7 @@ declare module '@react-three/fiber' {
       // rather than shipped by R3F, so its prop types are ours to describe.
       ref?: React.Ref<OrbitControlsElement>;
       args?: [camera: unknown, domElement: unknown];
+      target?: [number, number, number];
       enablePan?: boolean;
       minDistance?: number;
       maxDistance?: number;
@@ -84,8 +85,26 @@ declare module '@react-three/fiber' {
   }
 }
 
-/** Drives three's OrbitControls from R3F's frame loop, which is what keeps them in sync. */
-function CameraControls() {
+/**
+ * Drives three's OrbitControls from R3F's frame loop, which is what keeps them in sync.
+ *
+ * IT ALSO REFITS THE CAMERA WHEN THE LAYOUT CHANGES, and that is not a nicety. R3F reads
+ * `camera={{ position }}` only for the FIRST frame; before this effect existed the camera
+ * was placed once and never reconsidered, so a grid wider than the one the position was
+ * chosen for simply hung off the edge of the canvas. That is not a rendering glitch a
+ * viewer can reason about — it looks like blocks are missing, which for a screen whose
+ * entire job is "show me every block" is a correctness bug, not a cosmetic one.
+ *
+ * The effect body runs only when `position`/`target` actually change (they are memoised on
+ * the layout), so a user's own orbit is never fought or reset.
+ */
+function CameraControls({
+  position,
+  target,
+}: {
+  position: [number, number, number];
+  target: [number, number, number];
+}) {
   const { camera, gl, invalidate } = useThree();
   const ref = useRef<OrbitControlsElement>(null);
 
@@ -93,18 +112,37 @@ function CameraControls() {
     ref.current?.update();
   });
 
+  useEffect(() => {
+    camera.position.set(position[0], position[1], position[2]);
+    const controls = ref.current;
+    if (controls) {
+      controls.target.set(target[0], target[1], target[2]);
+      controls.update();
+    }
+    camera.lookAt(target[0], target[1], target[2]);
+    invalidate();
+  }, [camera, invalidate, position, target]);
+
   return (
     <orbitControls
       ref={ref}
       args={[camera, gl.domElement]}
       enablePan={false}
       minDistance={14}
-      maxDistance={70}
+      maxDistance={90}
       maxPolarAngle={Math.PI / 2.15}
       onEnd={invalidate}
     />
   );
 }
+
+/** Cell pitch on the schematic grid, and the footprint of one block box. */
+const CELL_SPACING = 9;
+const BLOCK_SIZE = 5;
+/** Vertical field of view, shared by the Canvas and the fit calculation so they cannot drift. */
+const CAMERA_FOV = 42;
+/** Constant viewing angle, normalised. Changing the layout must not change this. */
+const VIEW_DIRECTION = { x: 0.556, y: 0.502, z: 0.663 } as const;
 
 /** Colour by the worst thing open in that block. Deliberately not a gradient ramp. */
 const STATUS_COLOURS = {
@@ -140,6 +178,16 @@ export function CampusTwinPage() {
   const layout = useMemo(() => {
     const items = [...(blocks.data?.items ?? [])].sort((a, b) => a.id.localeCompare(b.id));
     const columns = Math.max(1, Math.ceil(Math.sqrt(items.length)));
+    /*
+     * ROWS IS NEEDED TO CENTRE `z`, WHICH IS NOT SYMMETRIC BY DEFAULT.
+     *
+     * `x` was always centred about the origin, but `z` ran 0, 0, 0, 9, 9, 9, 18 … — the
+     * whole grid sat on one side of the camera's orbit target. Two blocks were therefore
+     * pushed off the left edge of the canvas and the layout looked lopsided for no reason
+     * a viewer could see. Subtracting half the row span puts the grid's centre on the
+     * origin, which is also what the orbit target assumes.
+     */
+    const rows = Math.max(1, Math.ceil(items.length / columns));
     return items.map((block, index) => {
       const stats = summary.data?.byBlock.find((b) => b.blockId === block.id);
       const isCritical = (critical.data?.items ?? []).some((issue) => issue.blockId === block.id);
@@ -164,11 +212,49 @@ export function CampusTwinPage() {
               : stats
                 ? STATUS_COLOURS.clear
                 : STATUS_COLOURS.none,
-        x: (index % columns) * 9 - ((columns - 1) * 9) / 2,
-        z: Math.floor(index / columns) * 9,
+        x: (index % columns) * CELL_SPACING - ((columns - 1) * CELL_SPACING) / 2,
+        z: (Math.floor(index / columns) - (rows - 1) / 2) * CELL_SPACING,
       };
     });
   }, [blocks.data, summary.data, critical.data]);
+
+  /**
+   * Camera framing, derived from where the blocks actually ended up.
+   *
+   * A FIXED CAMERA POSITION CANNOT BE RIGHT FOR EVERY WORKSPACE. The REAL and DEMO
+   * workspaces hold different numbers of blocks, and the grid grows with the square root of
+   * that count — so any position chosen when there were eight blocks clips the outer ring
+   * once there are twenty. Comfortably fitting a sphere around the layout instead means the
+   * view is correct for four blocks and for forty, and it keeps being correct when someone
+   * adds a block through the admin console.
+   */
+  const framing = useMemo(() => {
+    if (layout.length === 0) {
+      return { position: [26, 23, 30] as [number, number, number], target: [0, 0, 0] as [number, number, number] };
+    }
+    const xs = layout.map((entry) => entry.x);
+    const zs = layout.map((entry) => entry.z);
+    const minX = Math.min(...xs) - BLOCK_SIZE / 2;
+    const maxX = Math.max(...xs) + BLOCK_SIZE / 2;
+    const minZ = Math.min(...zs) - BLOCK_SIZE / 2;
+    const maxZ = Math.max(...zs) + BLOCK_SIZE / 2;
+
+    const centre: [number, number, number] = [(minX + maxX) / 2, 0, (minZ + maxZ) / 2];
+    // Radius of the circle that contains the whole footprint, seen from any azimuth.
+    const radius = Math.hypot(maxX - minX, maxZ - minZ) / 2;
+    // Standard fit-sphere distance, plus a margin so the nearest box is not flush with the edge.
+    const halfFov = ((CAMERA_FOV / 2) * Math.PI) / 180;
+    const distance = (radius / Math.sin(halfFov)) * 1.08;
+
+    return {
+      position: [
+        centre[0] + VIEW_DIRECTION.x * distance,
+        VIEW_DIRECTION.y * distance,
+        centre[2] + VIEW_DIRECTION.z * distance,
+      ] as [number, number, number],
+      target: centre,
+    };
+  }, [layout]);
 
   const selectedBlock = layout.find((entry) => entry.block.id === selected) ?? null;
 
@@ -248,7 +334,7 @@ export function CampusTwinPage() {
                 <Canvas
                   // A fixed camera, a flat light, no shadows: this is a diagram, and lighting
                   // tricks would only make it look more authoritative than it is.
-                  camera={{ position: [22, 20, 26], fov: 42 }}
+                  camera={{ position: framing.position, fov: CAMERA_FOV }}
                   dpr={[1, 2]}
                   // Antialiasing on; the schematic reads better with clean edges.
                   gl={{ antialias: true }}
@@ -272,7 +358,7 @@ export function CampusTwinPage() {
 
                   {/* Panning is disabled on purpose: a user who can pan will try to navigate to
                       a "part of campus", and there is no geography here to navigate. */}
-                  <CameraControls />
+                  <CameraControls position={framing.position} target={framing.target} />
                 </Canvas>
 
                 <div className="twin__overlay">
@@ -285,21 +371,29 @@ export function CampusTwinPage() {
                       <span>{hoverLabel.detail}</span>
                     </div>
                   )}
-                  <div className="twin__notice">
-                    <strong>Schematic layout.</strong> Grid position is generated from each block's
-                    id, not from latitude and longitude. Drag to orbit, scroll to zoom, click a box
-                    for its details.
-                  </div>
-                  <div className="twin__legend">
-                    <LegendRow colour={STATUS_COLOURS.critical} label="Has a CRITICAL issue" />
-                    <LegendRow colour={STATUS_COLOURS.overdue} label="Has an overdue issue" />
-                    <LegendRow colour={STATUS_COLOURS.open} label="Open issues" />
-                    <LegendRow colour={STATUS_COLOURS.clear} label="All resolved" />
-                    <LegendRow colour={STATUS_COLOURS.none} label="No issues recorded" />
-                    <span className="muted" style={{ marginTop: 2 }}>
-                      Box height = open issue count
-                    </span>
-                  </div>
+                </div>
+              </div>
+
+              {/* THE KEY SITS BELOW THE CANVAS, NOT ON TOP OF IT. It used to be absolutely
+                  positioned over the scene, and in a real browser it covered a block box and the
+                  note covered the top strip — the same "a block looks missing" defect the camera
+                  fit fixed, reintroduced by the overlays. A screen whose job is to show every
+                  block must not draw opaque cards over some of them. */}
+              <div className="twin__key">
+                <div className="twin__notice">
+                  <strong>Schematic layout.</strong> Grid position is generated from each block's
+                  id, not from latitude and longitude. Drag to orbit, scroll to zoom, click a box
+                  for its details.
+                </div>
+                <div className="twin__legend" aria-label="Colour key">
+                  <LegendRow colour={STATUS_COLOURS.critical} label="Has a CRITICAL issue" />
+                  <LegendRow colour={STATUS_COLOURS.overdue} label="Has an overdue issue" />
+                  <LegendRow colour={STATUS_COLOURS.open} label="Open issues" />
+                  <LegendRow colour={STATUS_COLOURS.clear} label="All resolved" />
+                  <LegendRow colour={STATUS_COLOURS.none} label="No issues recorded" />
+                  <span className="muted" style={{ marginTop: 2 }}>
+                    Box height = open issue count
+                  </span>
                 </div>
               </div>
 
@@ -434,7 +528,7 @@ function SchematicBlock({
           document.body.style.cursor = '';
         }}
       >
-        <boxGeometry args={[5, height, 5]} />
+        <boxGeometry args={[BLOCK_SIZE, height, BLOCK_SIZE]} />
         <meshLambertMaterial color={colour} />
       </mesh>
 
@@ -443,7 +537,7 @@ function SchematicBlock({
           wireframe box, so no line primitive or extra dependency is needed. */}
       {isSelected && (
         <mesh scale={1.02}>
-          <boxGeometry args={[5, height, 5]} />
+          <boxGeometry args={[BLOCK_SIZE, height, BLOCK_SIZE]} />
           <meshBasicMaterial color="#10161a" wireframe />
         </mesh>
       )}

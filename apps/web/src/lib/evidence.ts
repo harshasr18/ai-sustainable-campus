@@ -43,8 +43,28 @@ interface CacheEntry {
 
 /** reportId -> object URL. Module-level so it outlives component remounts. */
 const cache = new Map<string, CacheEntry>();
-/** reportId -> in-flight request, so concurrent renders share one fetch. */
-const inFlight = new Map<string, Promise<string>>();
+/**
+ * reportId -> in-flight request, so concurrent renders share one fetch.
+ *
+ * THE REQUEST OWNS ITS OWN AbortController, AND IS ABORTED ONLY WHEN NOBODY IS WAITING.
+ *
+ * The first version passed the FIRST subscriber's AbortSignal into the shared fetch. Under
+ * React StrictMode (and in production whenever two views share a photo and one unmounts) the
+ * first subscriber's cleanup aborted the request, the second subscriber picked up that same
+ * aborted promise from this map, received an AbortError, correctly ignored it as a
+ * cancellation — and stayed on "loading" forever. The browser smoke test caught it: every
+ * thumbnail request was ERR_ABORTED and never retried.
+ *
+ * Now each subscriber registers as a waiter. Releasing the last waiter schedules the abort on
+ * a timer, so StrictMode's synchronous unmount-then-remount re-registers before it fires and
+ * the request survives; a real navigation away still cancels it.
+ */
+interface InFlightEntry {
+  promise: Promise<string>;
+  controller: AbortController;
+  waiters: number;
+}
+const inFlight = new Map<string, InFlightEntry>();
 
 function releaseWhenIdle(reportId: string): void {
   const entry = cache.get(reportId);
@@ -63,40 +83,60 @@ function releaseWhenIdle(reportId: string): void {
   }
 }
 
-async function fetchEvidence(reportId: string, signal?: AbortSignal): Promise<string> {
+/** Registers interest in a report's photo, starting the shared request if needed. */
+function acquireEvidence(reportId: string): Promise<string> {
   const existing = inFlight.get(reportId);
-  if (existing) return existing;
-
-  const promise = (async () => {
-    const token = getToken();
-    const response = await fetch(`/v1/reports/${reportId}/evidence`, {
-      headers: token ? { authorization: `Bearer ${token}` } : {},
-      credentials: 'same-origin',
-      signal,
-    });
-
-    if (response.status === 403) throw new ApiError({ code: 'FORBIDDEN', message: '', status: 403 });
-    if (response.status === 404) throw new ApiError({ code: 'NOT_FOUND', message: '', status: 404 });
-    if (!response.ok) {
-      throw new ApiError({
-        code: 'INTERNAL_ERROR',
-        message: `Photo could not be loaded (status ${response.status}).`,
-        status: response.status,
-      });
-    }
-
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    cache.set(reportId, { url, refCount: 0, released: false });
-    return url;
-  })();
-
-  inFlight.set(reportId, promise);
-  try {
-    return await promise;
-  } finally {
-    inFlight.delete(reportId);
+  if (existing) {
+    existing.waiters += 1;
+    return existing.promise;
   }
+
+  const controller = new AbortController();
+  const entry: InFlightEntry = { promise: Promise.resolve(''), controller, waiters: 1 };
+  entry.promise = fetchEvidence(reportId, controller.signal).finally(() => {
+    // Only remove OUR entry: a newer request for the same id may have replaced it.
+    if (inFlight.get(reportId) === entry) inFlight.delete(reportId);
+  });
+  inFlight.set(reportId, entry);
+  return entry.promise;
+}
+
+/** Withdraws interest. The request is cancelled only if no one re-registers promptly. */
+function releaseInFlight(reportId: string): void {
+  const entry = inFlight.get(reportId);
+  if (!entry) return;
+  entry.waiters -= 1;
+  if (entry.waiters > 0) return;
+  setTimeout(() => {
+    if (inFlight.get(reportId) === entry && entry.waiters <= 0) {
+      entry.controller.abort();
+      inFlight.delete(reportId);
+    }
+  }, 0);
+}
+
+async function fetchEvidence(reportId: string, signal: AbortSignal): Promise<string> {
+  const token = getToken();
+  const response = await fetch(`/v1/reports/${reportId}/evidence`, {
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+    credentials: 'same-origin',
+    signal,
+  });
+
+  if (response.status === 403) throw new ApiError({ code: 'FORBIDDEN', message: '', status: 403 });
+  if (response.status === 404) throw new ApiError({ code: 'NOT_FOUND', message: '', status: 404 });
+  if (!response.ok) {
+    throw new ApiError({
+      code: 'INTERNAL_ERROR',
+      message: `Photo could not be loaded (status ${response.status}).`,
+      status: response.status,
+    });
+  }
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  cache.set(reportId, { url, refCount: 0, released: false });
+  return url;
 }
 
 /**
@@ -122,14 +162,17 @@ export function useEvidence(reportId: string | null | undefined): EvidenceState 
     }
 
     let cancelled = false;
-    const controller = new AbortController();
+    let holdsCacheRef = false;
     setState({ status: 'loading' });
 
-    fetchEvidence(reportId, controller.signal)
+    acquireEvidence(reportId)
       .then((url) => {
         if (cancelled) return;
         const entry = cache.get(reportId);
-        if (entry) entry.refCount += 1;
+        if (entry) {
+          entry.refCount += 1;
+          holdsCacheRef = true;
+        }
         setState({ status: 'ready', url });
       })
       .catch((error: unknown) => {
@@ -151,8 +194,11 @@ export function useEvidence(reportId: string | null | undefined): EvidenceState 
 
     return () => {
       cancelled = true;
-      controller.abort();
-      releaseWhenIdle(reportId);
+      releaseInFlight(reportId);
+      // Only drop a cache reference this subscriber actually took. The old cleanup released
+      // unconditionally, so an unmount before the photo arrived decremented someone else's
+      // reference and could revoke a URL another view was still displaying.
+      if (holdsCacheRef) releaseWhenIdle(reportId);
     };
   }, [reportId]);
 
@@ -163,5 +209,8 @@ export function useEvidence(reportId: string | null | undefined): EvidenceState 
 export function clearEvidenceCache(): void {
   for (const entry of cache.values()) URL.revokeObjectURL(entry.url);
   cache.clear();
+  // Cancel requests still running for the previous user, so their bytes never land in a
+  // cache the next user reads from.
+  for (const entry of inFlight.values()) entry.controller.abort();
   inFlight.clear();
 }

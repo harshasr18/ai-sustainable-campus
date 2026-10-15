@@ -88,7 +88,7 @@ async function signIn(page, email) {
   await page.fill('input[type="password"]', PASSWORD);
   await page.click('button[type="submit"]');
   await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 15000 });
-  await page.waitForLoadState('networkidle');
+  await page.waitForTimeout(800);
 }
 
 /**
@@ -111,16 +111,33 @@ async function visit(page, path) {
     // and for the routes the server refuses; those are asserted separately.
     if (status >= 400) problems.badResponses.push(`${status} ${url.replace(BASE, '')}`);
   };
+  /*
+   * ABORTED REQUESTS ARE NOT DEFECTS UNTIL PROVEN OTHERWISE.
+   *
+   * main.tsx renders inside <React.StrictMode>, which in development mounts every component,
+   * unmounts it, and mounts it again. useAsync aborts the first mount's fetch on that unmount
+   * — correct behaviour, and the same thing that happens when a user navigates away mid-load.
+   * The first version of this harness reported each of those as a failure (16 false FAILs).
+   *
+   * A failed request is therefore only kept if the SAME URL never succeeded afterwards
+   * during the visit. A genuinely broken endpoint still fails, because it never succeeds.
+   */
+  const succeeded = new Set();
+  const failed = [];
   const onRequestFailed = (request) => {
-    problems.badRequests.push(`${request.url().replace(BASE, '')} — ${request.failure()?.errorText}`);
+    failed.push({ url: request.url(), error: request.failure()?.errorText ?? 'unknown' });
   };
+  const onFinished = (request) => succeeded.add(request.url());
 
   page.on('console', onConsole);
   page.on('pageerror', onPageError);
   page.on('response', onResponse);
   page.on('requestfailed', onRequestFailed);
+  page.on('requestfinished', onFinished);
 
-  await page.goto(`${BASE}${path}`, { waitUntil: 'networkidle' });
+  // domcontentloaded + an explicit settle, NOT networkidle: networkidle waits on exactly the
+  // aborted StrictMode requests described above and misfires.
+  await page.goto(`${BASE}${path}`, { waitUntil: 'domcontentloaded' });
   // Let effects settle: the twin builds geometry and the dashboards resolve several
   // requests, and a mount-time crash arrives after the load event.
   await page.waitForTimeout(1200);
@@ -129,6 +146,13 @@ async function visit(page, path) {
   page.off('pageerror', onPageError);
   page.off('response', onResponse);
   page.off('requestfailed', onRequestFailed);
+  page.off('requestfinished', onFinished);
+
+  for (const entry of failed) {
+    if (!succeeded.has(entry.url)) {
+      problems.badRequests.push(`${entry.url.replace(BASE, '')} — ${entry.error}`);
+    }
+  }
 
   const text = await page.locator('body').innerText();
   return { ...problems, text };
@@ -219,7 +243,7 @@ async function main() {
     });
 
     await signIn(page, ACCOUNTS.ADMIN);
-    await page.goto(`${BASE}/admin/twin`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/admin/twin`, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('canvas', { timeout: 20000 });
     await page.waitForTimeout(2500);
 

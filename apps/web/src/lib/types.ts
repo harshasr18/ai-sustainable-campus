@@ -353,3 +353,21 @@ export interface EventTypeContract {
   liveTransport: string;
   humanReviewConfidenceThreshold: number;
 }
+
+/**
+ * The review queue, with the AI's own operational state attached.
+ *
+ * `ai` is not decoration. A reviewer looking at an empty queue must be able to tell
+ * "nothing needs my attention" apart from "nothing can be analysed, because no model is
+ * configured here" — two facts with the same appearance and opposite meanings.
+ */
+export interface ReviewQueueResponse {
+  count: number;
+  ai: {
+    configured: boolean;
+    provider: string;
+    model: string;
+    humanReviewConfidenceThreshold: number;
+  };
+  items: ReviewQueueItem[];
+}

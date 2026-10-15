@@ -20,6 +20,7 @@ import {
   type ReactNode,
 } from 'react';
 import { api, ApiError, setToken, getToken, setUnauthorizedHandler } from './api.js';
+import { clearCampusCache } from './campus.js';
 import { clearEvidenceCache } from './evidence.js';
 
 /** Mirrors the backend's Role and WorkspaceKind, from the shared contract. */
@@ -103,6 +104,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const onSessionLost = useCallback(() => {
     setUser(null);
     clearEvidenceCache();
+    // Campus lists are per-workspace: a DEMO block list left in memory must not be shown to
+    // the next person who signs in, who may be in the REAL workspace (§11).
+    clearCampusCache();
   }, []);
 
   useEffect(() => {
@@ -133,6 +137,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
     setToken(null);
     clearEvidenceCache();
+    clearCampusCache();
     setUser(null);
   }, []);
 

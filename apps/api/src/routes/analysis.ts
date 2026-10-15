@@ -105,6 +105,22 @@ export function registerAnalysisRoutes(
   /* ---------------------------------------------------------------- */
   /* GET /v1/admin/review-queue — what a human needs to look at        */
   /* ---------------------------------------------------------------- */
+  /**
+   * The payload carries the AI's own operational state, and that is deliberate.
+   *
+   * A reviewer has to be able to tell "nothing needs my attention" apart from "nothing can
+   * be analysed here, because no model is configured". Those two facts look identical if
+   * all the page receives is an empty list, and they call for opposite responses — one is
+   * a good day, the other means the whole pipeline is switched off. The threshold is
+   * included for the same reason: it is what decides whether a row appears here at all.
+   *
+   * It is bundled into this response rather than fetched from GET /v1/admin/ai/status,
+   * which is ADMIN-only. An HOD opening this page would otherwise get a 403 and a red
+   * console error on a screen that is entirely theirs (§10 — every request a page makes
+   * must be one its role is allowed to make). Widening that guard was the wrong fix:
+   * /ai/status is an operator's deployment view, and this is a reviewer's context. Each
+   * endpoint now serves the audience it was built for, and neither is loosened.
+   */
   app.get(
     '/v1/admin/review-queue',
     {
@@ -117,6 +133,12 @@ export function registerAnalysisRoutes(
       const items = await analysisRepo.listNeedingReview(db, actor.workspaceId, limit);
       return {
         count: items.length,
+        ai: {
+          configured: ai.provider !== 'unconfigured',
+          provider: ai.provider,
+          model: ai.model,
+          humanReviewConfidenceThreshold: AI_REVIEW_CONFIDENCE_THRESHOLD,
+        },
         items: items.map((row) => ({
           analysisId: row.id,
           reportId: row.report_id,

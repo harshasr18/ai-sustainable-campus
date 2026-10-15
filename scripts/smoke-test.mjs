@@ -327,15 +327,30 @@ const main = async () => {
   const stream = await api('GET', '/v1/events/stream', { token: hod });
   check('live stream endpoint returns 501 (not faked)', stream.status === 501);
 
-  const analyze = await api('POST', `/v1/reports/${reportId}/analyze`, { token: hod });
-  // No AI_PROVIDER is configured on this server, so 501 remains the honest answer.
-  // With AI_PROVIDER=local-clip this becomes a 200 carrying a real analysis.
-  check('AI analysis returns 501 while unconfigured (not faked)', analyze.status === 501, `HTTP ${analyze.status}`);
-
+  /*
+   * The AI checks follow the server's OWN declared state rather than assuming one. The first
+   * version hard-coded "unconfigured", so the moment AI_PROVIDER=local-clip was switched on
+   * for the demo, the smoke test failed a perfectly honest server. Both states are checked
+   * strictly: unconfigured must answer 501 (never a fabricated result), configured must
+   * answer 200 naming the real provider and a score in [0, 1].
+   */
   const aiStatus = await api('GET', '/v1/admin/ai/status', { token: admin });
-  check('AI status reports the configured provider truthfully',
-    aiStatus.status === 200 && aiStatus.body.configured === false,
-    `provider=${aiStatus.body.provider}`);
+  check('AI status is reported', aiStatus.status === 200, `provider=${aiStatus.body.provider}`);
+  const aiConfigured = aiStatus.body.configured === true;
+
+  const analyze = await api('POST', `/v1/reports/${reportId}/analyze`, { token: hod });
+  if (aiConfigured) {
+    check(
+      'AI analysis runs the configured model (real result, not faked)',
+      analyze.status === 200 &&
+        analyze.body.provider === aiStatus.body.provider &&
+        (analyze.body.confidence === null ||
+          (analyze.body.confidence >= 0 && analyze.body.confidence <= 1)),
+      `HTTP ${analyze.status} status=${analyze.body.status} confidence=${analyze.body.confidence}`,
+    );
+  } else {
+    check('AI analysis returns 501 while unconfigured (not faked)', analyze.status === 501, `HTTP ${analyze.status}`);
+  }
 
   const reviewQueue = await api('GET', '/v1/admin/review-queue', { token: hod });
   check('review queue is reachable and returns a shape', reviewQueue.status === 200 && Array.isArray(reviewQueue.body.items),

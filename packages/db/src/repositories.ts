@@ -1162,7 +1162,11 @@ export const aiAnalyses = {
    *   2. a report whose FAILED attempts have reached the configured limit is left
    *      alone, so a permanently broken image costs three attempts and then stops
    *      rather than burning the CPU on every tick;
-   *   3. a report with no photograph can never be analysed, so it is not queued at all.
+   *   3. a report with no photograph can never be analysed, so it is not queued at all;
+   *   4. a report whose failure was PERMANENT (unusable photograph, missing evidence,
+   *      untrustworthy output) is not retried at all — one attempt, then it waits for a
+   *      human. Failures are persisted as "<CODE>: message", so the code is the text
+   *      before the first colon.
    *
    * Ordering by `submitted_at` makes the queue FIFO, so the oldest waiting student is
    * served first and a burst of submissions drains in the order it arrived.
@@ -1172,6 +1176,7 @@ export const aiAnalyses = {
     workspaceId: string,
     maxAttempts: number,
     limit = 5,
+    permanentFailureCodes: readonly string[] = [],
   ): Promise<Array<{ reportId: string; workspaceKind: 'REAL' | 'DEMO' }>> {
     const r = await conn.query<{ report_id: string; workspace_kind: 'REAL' | 'DEMO' }>(
       `SELECT r.id AS report_id, w.kind AS workspace_kind
@@ -1188,9 +1193,15 @@ export const aiAnalyses = {
           AND (SELECT count(*) FROM ai_analyses tried
                 WHERE tried.report_id = r.id
                   AND tried.status = 'FAILED') < $2
+          AND NOT EXISTS (
+                SELECT 1 FROM ai_analyses permanent
+                 WHERE permanent.report_id = r.id
+                   AND permanent.status = 'FAILED'
+                   AND split_part(permanent.error_message, ':', 1) = ANY($4::text[])
+              )
         ORDER BY r.submitted_at
         LIMIT $3`,
-      [workspaceId, maxAttempts, limit],
+      [workspaceId, maxAttempts, limit, [...permanentFailureCodes]],
     );
     return r.rows.map((row) => ({ reportId: row.report_id, workspaceKind: row.workspace_kind }));
   },

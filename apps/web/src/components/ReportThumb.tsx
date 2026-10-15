@@ -24,14 +24,21 @@ export function ReportThumb({
 }: {
   reportId: string | null | undefined;
   hasEvidence: boolean;
-  size?: number;
+  /**
+   * Fixed square size in px for list thumbnails, or `'fluid'` to let the stylesheet size the
+   * frame. The detail page used to pass `size={320}`: a fixed 320px box on a 390px phone,
+   * inside a padded card, overflowed — and because its class had no CSS rule the image was not
+   * clipped either, so it spilled over the caption and into the next card.
+   */
+  size?: number | 'fluid';
   className?: string;
 }) {
   const evidence = useEvidence(hasEvidence ? reportId : null);
+  const frame = size === 'fluid' ? undefined : { width: size, height: size };
 
   if (!hasEvidence) {
     return (
-      <div className={className} style={{ width: size, height: size }} title="No photograph on this record">
+      <div className={className} style={frame} title="No photograph on this record">
         <span aria-hidden="true">—</span>
         <span className="sr-only">No photograph</span>
       </div>
@@ -40,7 +47,7 @@ export function ReportThumb({
 
   if (evidence.status === 'ready') {
     return (
-      <div className={className} style={{ width: size, height: size }}>
+      <div className={className} style={frame}>
         <img src={evidence.url} alt="Photograph submitted with this report" loading="lazy" />
       </div>
     );
@@ -48,7 +55,7 @@ export function ReportThumb({
 
   if (evidence.status === 'forbidden') {
     return (
-      <div className={className} style={{ width: size, height: size }} title="You are not authorized to view this photograph">
+      <div className={className} style={frame} title="You are not authorized to view this photograph">
         <span aria-hidden="true">🔒</span>
         <span className="sr-only">Photograph not available to you</span>
       </div>
@@ -57,7 +64,7 @@ export function ReportThumb({
 
   if (evidence.status === 'missing') {
     return (
-      <div className={className} style={{ width: size, height: size }} title="The stored photograph is missing">
+      <div className={className} style={frame} title="The stored photograph is missing">
         <span aria-hidden="true">?</span>
         <span className="sr-only">Photograph missing</span>
       </div>
@@ -66,7 +73,7 @@ export function ReportThumb({
 
   if (evidence.status === 'error') {
     return (
-      <div className={className} style={{ width: size, height: size }} title={evidence.message}>
+      <div className={className} style={frame} title={evidence.message}>
         <span aria-hidden="true">⚠</span>
         <span className="sr-only">Photograph could not be loaded</span>
       </div>
@@ -76,7 +83,7 @@ export function ReportThumb({
   return (
     <div
       className={className}
-      style={{ width: size, height: size }}
+      style={frame}
       aria-busy="true"
       title="Loading photograph"
     >
