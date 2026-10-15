@@ -38,7 +38,6 @@ export function formatRelative(value: string | null | undefined): string {
   const date = toDate(value);
   if (!date) return '—';
   const diffMs = date.getTime() - Date.now();
-  const absSeconds = Math.abs(diffMs) / 1000;
 
   const divisions: [number, Intl.RelativeTimeFormatUnit][] = [
     [60, 'second'],
@@ -85,9 +84,22 @@ export function formatElapsed(value: string | null | undefined): string {
   return `${months}mo ${days % 30}d`;
 }
 
-/** Formats a duration in hours as "3d 4h" / "6h 20m". */
+/**
+ * Formats a duration in hours as "3d 4h" / "6h 20m" / "12m".
+ *
+ * SUB-MINUTE VALUES RENDER AS "<1m", NOT "0m". This is not cosmetic. The demonstration seed
+ * creates and resolves an issue inside the same transaction, so real average resolution
+ * times of 0.0002 hours are genuinely present in the data — and rounding those to "0m" reads
+ * as a broken calculation rather than as the instant it actually was. "<1m" says the true
+ * thing: it took less than a minute, which is all the data supports.
+ *
+ * A zero is still shown as "0m", because a genuine zero is different from a very small
+ * positive number — but `null` remains an em dash, and never becomes zero hours.
+ */
 export function formatHours(hours: number | null | undefined): string {
   if (hours === null || hours === undefined || Number.isNaN(hours)) return '—';
+  if (hours > 0 && hours < 1 / 60) return '<1m';
+  if (hours < 0) return '—'; // A negative duration means the timestamps are inconsistent.
   const totalMinutes = Math.round(hours * 60);
   const days = Math.floor(totalMinutes / 1440);
   const remainingHours = Math.floor((totalMinutes % 1440) / 60);

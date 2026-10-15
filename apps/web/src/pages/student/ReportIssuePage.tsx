@@ -23,7 +23,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { api, ApiError, query } from '../../lib/api.js';
+import { api, ApiError } from '../../lib/api.js';
 import { useAsync } from '../../lib/useAsync.js';
 import type {
   Block,

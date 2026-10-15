@@ -24,6 +24,7 @@ import type {
   Block,
   Category,
   IssueDetailResponse,
+  IssueHistoryEntry,
   Paginated,
   ReportAnalysisResponse,
   ReportDetail,
@@ -79,11 +80,18 @@ export function ReportDetailPage() {
 
   // The master issue, only when this report is linked to one. A student may read an issue
   // only if they filed one of its reports, which is exactly this case.
-  const issue = useAsync(
+  const issue = useAsync<IssueDetailResponse>(
     (signal) =>
       data?.issueId
         ? api.get<IssueDetailResponse>(`/v1/issues/${data.issueId}`, { signal })
-        : Promise.resolve({ issue: null, history: [], linkedReportCount: 0 }),
+        : // A report with no issue id has no ticket to show, so the empty shape must satisfy
+          // the same contract the API returns — otherwise TypeScript widens it to `{}`.
+          Promise.resolve<IssueDetailResponse>({
+            issue: null,
+            history: [],
+            linkedReports: [],
+            linkedReportCount: 0,
+          }),
     [data?.issueId],
   );
 
@@ -206,7 +214,7 @@ export function ReportDetailPage() {
           {issueHistory.length > 0 && (
             <Card title="Progress" subtitle="Recorded by campus staff.">
               <ol className="timeline">
-                {issueHistory.map((entry) => (
+                {issueHistory.map((entry: IssueHistoryEntry) => (
                   <li key={entry.id} className="timeline__item">
                     <span className="timeline__marker timeline__marker--done" aria-hidden="true">
                       ✓

@@ -122,9 +122,38 @@ export interface IssueHistoryEntry {
 }
 
 /** `GET /v1/issues/:id` */
+/**
+ * One report attached to an issue, as returned inside `GET /v1/issues/:id`.
+ *
+ * `reporterUserId` and `reporterDisplayName` are `null` when the caller is a STUDENT: a
+ * student may see their own report on a shared ticket but never another student's identity.
+ * `linkedReportCount` on the response still reports the true total, which is what the
+ * duplicate-linking UX needs.
+ *
+ * `evidenceUrl` is an authorised endpoint, not a public URL — the bytes still require the
+ * bearer token, which is why every thumbnail goes through fetch-to-blob (lib/evidence.ts).
+ */
+export interface LinkedReport {
+  id: string;
+  reporterUserId: string | null;
+  reporterDisplayName: string | null;
+  selectedCategoryId: string;
+  aiPredictedCategoryId: string | null;
+  aiConfidence: number | null;
+  aiSeverity: Severity | null;
+  validationStatus: string;
+  duplicateMatchStatus: string;
+  submittedAt: string;
+  hasEvidence: boolean;
+  evidenceUrl: string | null;
+}
+
 export interface IssueDetailResponse {
   issue: Issue | null;
   history: IssueHistoryEntry[];
+  /** All reports on the ticket for staff; only the caller's own for a student. */
+  linkedReports: LinkedReport[];
+  /** The true number of reports on the ticket, regardless of what `linkedReports` holds. */
   linkedReportCount: number;
 }
 
@@ -196,6 +225,12 @@ export interface AnalyticsSummary {
   bySeverity: { severity: string; total: number }[];
   reportsByWeek: { weekStart: string; total: number; decided: number; duplicates: number }[];
   tokens: {
+    /**
+     * The ledger has no block or category dimension, so these figures are workspace-wide (or
+     * the caller's own ledger) even when the rest of the summary is filtered. Label them
+     * accordingly — never present them as filtered.
+     */
+    scope: 'WHOLE_WORKSPACE' | 'OWN_LEDGER';
     credited: number;
     creditCount: number;
     reversed: number;
@@ -300,12 +335,16 @@ export interface AdminUser {
 export interface AuditEntry {
   id: string;
   actorUserId: string | null;
+  /** Resolved by the server so the console does not have to join users itself. */
+  actorDisplayName: string | null;
   action: string;
   entityType: string;
-  entityId: string;
+  entityId: string | null;
+  /** `{ field: value }` snapshots from migration 0005's `before_state` / `after_state`. */
+  beforeState: Record<string, unknown> | null;
+  afterState: Record<string, unknown> | null;
   reason: string | null;
   createdAt: string;
-  [key: string]: unknown;
 }
 
 export interface EventTypeContract {

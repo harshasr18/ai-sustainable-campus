@@ -22,7 +22,7 @@
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, query } from '../../lib/api.js';
 import { useAsync } from '../../lib/useAsync.js';
-import type { Issue, IssueStatus, Paginated } from '../../lib/types.js';
+import type { Issue, Paginated } from '../../lib/types.js';
 import { Card, Pagination } from '../../components/data.js';
 import { EmptyPane, ErrorPane, InlineAlert, SkeletonRows } from '../../components/states.js';
 import { OverdueBadge, SeverityBadge, StatusBadge } from '../../components/badges.js';
@@ -310,7 +310,10 @@ export function IssuesPage() {
                         {issue.status === 'RESOLVED' ? (
                           <span className="muted">Closed</span>
                         ) : issue.overdue ? (
-                          <OverdueBadge dueAt={issue.dueAt} />
+                          // `OverdueBadge` takes the elapsed time, not the due date: it prints
+                          // how late the issue is, and the "overdue" flag itself was computed
+                          // server-side from the configured threshold.
+                          <OverdueBadge elapsed={formatElapsed(issue.dueAt)} />
                         ) : (
                           formatDateTime(issue.dueAt)
                         )}
@@ -333,6 +336,3 @@ export function IssuesPage() {
     </>
   );
 }
-
-/** Re-exported so the type is used somewhere meaningful rather than imported for nothing. */
-export type { IssueStatus };

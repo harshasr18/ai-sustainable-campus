@@ -15,9 +15,10 @@
  * page assumes that reaching it locally implies permission.
  */
 
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Suspense, lazy } from 'react';
+import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import type { ReactNode } from 'react';
-import { useSession, canAccess, homePathFor, type Role } from './lib/session.js';
+import { useSession, homePathFor, ROUTE_ACCESS, type Role } from './lib/session.js';
 import { AppShell } from './components/AppShell.js';
 import { LoadingPane, EmptyPane } from './components/states.js';
 import { LoginPage } from './pages/LoginPage.js';
@@ -33,12 +34,28 @@ import { IssuesPage } from './pages/hod/IssuesPage.js';
 import { IssueDetailPage } from './pages/hod/IssueDetailPage.js';
 import { ReviewQueuePage } from './pages/hod/ReviewQueuePage.js';
 import { AdminDashboard } from './pages/admin/AdminDashboard.js';
-import { AnalyticsPage } from './pages/admin/AnalyticsPage.js';
 import { AccountsPage } from './pages/admin/AccountsPage.js';
 import { CampusPage } from './pages/admin/CampusPage.js';
 import { CategoriesPage } from './pages/admin/CategoriesPage.js';
 import { SystemPage } from './pages/admin/SystemPage.js';
-import { CampusTwinPage } from './pages/admin/CampusTwinPage.js';
+
+/**
+ * TWO PAGES ARE LOADED ON DEMAND, AND WHY IT IS ONLY TWO.
+ *
+ * The analytics and digital-twin screens drag in Recharts and three.js — together roughly
+ * a megabyte of JavaScript that a student filing a report on a phone has no use for. §6 asks
+ * for a mobile-first experience and warns against a heavyweight one, and a student's first
+ * page load should not pay for an admin-only 3D renderer.
+ *
+ * The rest are imported eagerly on purpose: they are small, and a spinner between every
+ * navigation is a worse experience than the kilobytes it saves.
+ */
+const AnalyticsPage = lazy(() =>
+  import('./pages/admin/AnalyticsPage.js').then((module) => ({ default: module.AnalyticsPage })),
+);
+const CampusTwinPage = lazy(() =>
+  import('./pages/admin/CampusTwinPage.js').then((module) => ({ default: module.CampusTwinPage })),
+);
 
 function RequireSession({ children }: { children: ReactNode }) {
   const { user, initialising } = useSession();
@@ -77,9 +94,9 @@ function RequireRole({ role, children }: { role: Role[]; children: ReactNode }) 
       title="This page is not available to your role"
       text={`You are signed in as ${user.role.toLowerCase()}, which does not have access to ${location.pathname}. Every request to it would also be refused by the server.`}
       action={
-        <a className="btn btn--primary" href={homePathFor(user.role)}>
+        <Link className="btn btn--primary" to={homePathFor(user.role)}>
           Go to my dashboard
-        </a>
+        </Link>
       }
     />
   );
@@ -90,30 +107,31 @@ function Guarded({ path, children }: { path: string; children: ReactNode }) {
   return <RequireRole role={allowedRoles(path)}>{children}</RequireRole>;
 }
 
+const ALL_ROLES: Role[] = ['STUDENT', 'HOD', 'ADMIN'];
+
 /**
- * Reads the allowed roles for a route path. Falls back to "any signed-in user" for routes
- * deliberately open to everyone (profile, an issue detail a student owns).
+ * Reads the allowed roles for a route path, by looking the path up in the access table.
+ *
+ * IT MUST READ THE TABLE DIRECTLY, NOT VIA `canAccess`. `canAccess` answers "may this role
+ * open this path?" and treats an unlisted path as open to every signed-in user — which is
+ * right for its own job, and useless here: asked about `/admin/issues/:id` it says yes to all
+ * three roles, so the prefix walk below would stop at the first candidate, report "everyone",
+ * and leave detail routes guarded by nothing. Reading `ROUTE_ACCESS` directly distinguishes
+ * "not listed" (keep walking) from "listed" (that is the answer).
+ *
+ * The walk tries the exact path and then progressively shorter prefixes, so
+ * `/admin/issues/:id` inherits the rule for `/admin/issues` without needing its own entry.
+ * When nothing in the table matches — the profile page, unsaved paths — every signed-in role
+ * is allowed, because the outer `RequireSession` is what protects those.
  */
 function allowedRoles(path: string): Role[] {
-  // Try the exact path, then progressively shorter prefixes, so /admin/issues/:id inherits
-  // the rule for /admin/issues without every detail route needing its own entry.
   const segments = path.split('/').filter(Boolean);
   for (let take = segments.length; take > 0; take--) {
     const candidate = `/${segments.slice(0, take).join('/')}`;
-    const roles = ROUTE_ACCESS_LOOKUP(candidate);
+    const roles = ROUTE_ACCESS[candidate];
     if (roles) return roles;
   }
-  return ['STUDENT', 'HOD', 'ADMIN'];
-}
-
-function ROUTE_ACCESS_LOOKUP(path: string): Role[] | null {
-  if (!canAccess(path, 'STUDENT')) {
-    // The table only answers "can this role access", so ask each role in turn.
-    const roles = (['STUDENT', 'HOD', 'ADMIN'] as Role[]).filter((role) => canAccess(path, role));
-    return roles.length > 0 ? roles : null;
-  }
-  const roles = (['STUDENT', 'HOD', 'ADMIN'] as Role[]).filter((role) => canAccess(path, role));
-  return roles.length > 0 ? roles : null;
+  return ALL_ROLES;
 }
 
 export function App() {
@@ -171,7 +189,14 @@ export function App() {
             </Guarded>
           }
         />
-        <Route path="/student/reports/:reportId" element={<ReportDetailPage />} />
+        <Route
+          path="/student/reports/:reportId"
+          element={
+            <Guarded path="/student/reports/:reportId">
+              <ReportDetailPage />
+            </Guarded>
+          }
+        />
         <Route
           path="/student/tokens"
           element={
@@ -206,7 +231,14 @@ export function App() {
             </Guarded>
           }
         />
-        <Route path="/hod/issues/:issueId" element={<IssueDetailPage />} />
+        <Route
+          path="/hod/issues/:issueId"
+          element={
+            <Guarded path="/hod/issues/:issueId">
+              <IssueDetailPage />
+            </Guarded>
+          }
+        />
 
         {/* ----------------------------- Admin ----------------------------- */}
         <Route
@@ -225,12 +257,21 @@ export function App() {
             </Guarded>
           }
         />
-        <Route path="/admin/issues/:issueId" element={<IssueDetailPage />} />
+        <Route
+          path="/admin/issues/:issueId"
+          element={
+            <Guarded path="/admin/issues/:issueId">
+              <IssueDetailPage />
+            </Guarded>
+          }
+        />
         <Route
           path="/admin/analytics"
           element={
             <Guarded path="/admin/analytics">
-              <AnalyticsPage />
+              <Suspense fallback={<RouteLoading label="Loading analytics…" />}>
+                <AnalyticsPage />
+              </Suspense>
             </Guarded>
           }
         />
@@ -238,7 +279,9 @@ export function App() {
           path="/admin/twin"
           element={
             <Guarded path="/admin/twin">
-              <CampusTwinPage />
+              <Suspense fallback={<RouteLoading label="Loading the 3D campus model…" />}>
+                <CampusTwinPage />
+              </Suspense>
             </Guarded>
           }
         />
@@ -280,6 +323,20 @@ export function App() {
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>
+  );
+}
+
+/**
+ * Fallback shown while a lazily-loaded route is fetched.
+ *
+ * A full-page spinner, not a skeleton: the point of splitting these routes is that the
+ * download is the slow part, and a skeleton implies content is already arriving.
+ */
+function RouteLoading({ label }: { label: string }) {
+  return (
+    <div style={{ display: 'grid', placeItems: 'center', minHeight: '50vh' }}>
+      <LoadingPane label={label} />
+    </div>
   );
 }
 

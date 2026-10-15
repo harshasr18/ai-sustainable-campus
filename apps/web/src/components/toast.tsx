@@ -18,11 +18,18 @@ interface Toast {
   id: number;
   variant: ToastVariant;
   message: string;
+  /** Optional second line. Used to carry the server's own wording through to the user. */
+  detail?: string;
 }
 
 interface ToastContextValue {
   success: (message: string) => void;
-  error: (message: string) => void;
+  /**
+   * Failures carry the server's message as a second line. A generic "something went wrong"
+   * tells the user nothing, and the API is careful to send a specific reason — a version
+   * conflict and a permission refusal are different problems with different remedies.
+   */
+  error: (message: string, detail?: string) => void;
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null);
@@ -37,9 +44,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const push = useCallback(
-    (variant: ToastVariant, message: string) => {
+    (variant: ToastVariant, message: string, detail?: string) => {
       const id = nextId++;
-      setToasts((current) => [...current, { id, variant, message }]);
+      setToasts((current) => [...current, { id, variant, message, ...(detail ? { detail } : {}) }]);
       // Errors stay longer: they usually need reading, and sometimes copying.
       window.setTimeout(() => dismiss(id), variant === 'error' ? 9000 : 5000);
     },
@@ -49,7 +56,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const value = useMemo<ToastContextValue>(
     () => ({
       success: (message: string) => push('success', message),
-      error: (message: string) => push('error', message),
+      error: (message: string, detail?: string) => push('error', message, detail),
     }),
     [push],
   );
@@ -63,7 +70,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             <span aria-hidden="true" className="strong">
               {toast.variant === 'error' ? '!' : '✓'}
             </span>
-            <span style={{ flex: 1 }}>{toast.message}</span>
+            <span style={{ flex: 1 }}>
+              {toast.message}
+              {toast.detail && (
+                <span className="toast__detail">{toast.detail}</span>
+              )}
+            </span>
             <button
               type="button"
               className="toast__close"

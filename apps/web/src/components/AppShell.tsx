@@ -10,7 +10,7 @@
  * regardless of what this menu shows.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useCurrentUser, useSession, canAccess, homePathFor } from '../lib/session.js';
 import { WorkspaceTag } from './badges.js';

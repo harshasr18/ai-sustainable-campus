@@ -26,8 +26,8 @@ import { useAsync } from '../../lib/useAsync.js';
 import type { AiStatus, ReviewQueueItem } from '../../lib/types.js';
 import { Card } from '../../components/data.js';
 import { EmptyPane, ErrorPane, InlineAlert, SkeletonRows } from '../../components/states.js';
-import { AiTag, DuplicateBadge } from '../../components/badges.js';
-import { formatConfidence, formatDateTime, formatElapsed } from '../../lib/format.js';
+import { AiTag } from '../../components/badges.js';
+import { formatConfidence, formatElapsed } from '../../lib/format.js';
 import { useCampusLookup } from '../../lib/campus.js';
 import { ReportThumb } from '../../components/ReportThumb.js';
 
@@ -132,7 +132,7 @@ export function ReviewQueuePage() {
                     </div>
 
                     <div>
-                      <div className="row-between mb-3">
+                      <div className="row row--between mb-3">
                         <div>
                           <p className="strong mb-0">
                             Student chose{' '}
@@ -193,6 +193,8 @@ export function ReviewQueuePage() {
                         >
                           Open the issue
                         </Link>
+                        {/* The report detail page authorises by ownership, and staff may read
+                            any report in their workspace, so this link works for both roles. */}
                         <Link
                           to={`/student/reports/${item.reportId}`}
                           className="btn btn--ghost btn--sm"

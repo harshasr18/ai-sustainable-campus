@@ -7,6 +7,7 @@
  */
 
 import type { ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 
 export function Card({
   title,
@@ -58,7 +59,7 @@ export function StatTile({
   label: string;
   value: number | string | null;
   foot?: ReactNode;
-  tone?: 'default' | 'accent' | 'warning' | 'danger';
+  tone?: 'default' | 'accent' | 'warning' | 'danger' | 'success';
   href?: string;
   title?: string;
 }) {
@@ -75,8 +76,18 @@ export function StatTile({
   );
 
   if (href) {
+    // An INTERNAL link is a router link, not an <a href>: a plain anchor would reload the
+    // whole application and lose the session-hydrated state on every tile click. An external
+    // URL still gets an anchor, and gets the safety attributes it needs.
+    if (href.startsWith('/')) {
+      return (
+        <Link className={className} to={href} title={title}>
+          {body}
+        </Link>
+      );
+    }
     return (
-      <a className={className} href={href} title={title}>
+      <a className={className} href={href} title={title} rel="noreferrer noopener" target="_blank">
         {body}
       </a>
     );

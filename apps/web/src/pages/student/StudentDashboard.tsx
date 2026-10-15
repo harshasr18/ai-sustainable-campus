@@ -30,7 +30,7 @@ import type {
 } from '../../lib/types.js';
 import { StatGrid, StatTile, Card } from '../../components/data.js';
 import { EmptyPane, ErrorPane, InlineAlert, SkeletonRows } from '../../components/states.js';
-import { ValidationBadge, DuplicateBadge, StatusBadge } from '../../components/badges.js';
+import { ValidationBadge, DuplicateBadge } from '../../components/badges.js';
 import { formatCount, formatDateTime, formatElapsed, formatRelative } from '../../lib/format.js';
 import { useCurrentUser } from '../../lib/session.js';
 import { ReportThumb } from '../../components/ReportThumb.js';

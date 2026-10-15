@@ -1507,3 +1507,271 @@ a.stat:hover {
 .mb-5 {
   margin-bottom: var(--space-5);
 }
+
+/* ------------------------------------------------------------------ */
+/* Phase 3 additions                                                   */
+/* ------------------------------------------------------------------ */
+
+/* A dashboard tile that links somewhere. The whole tile is the target, so the hit area is
+   comfortably large on a phone — §6's mobile-first requirement. */
+.stat {
+  text-decoration: none;
+  color: inherit;
+}
+a.stat:hover {
+  border-color: var(--teal-600);
+}
+.stat--success {
+  border-left-color: var(--green-600);
+}
+.stat--success .stat__value {
+  color: var(--green-600);
+}
+
+/* Row that wraps on a narrow screen instead of overflowing. */
+.row--wrap {
+  flex-wrap: wrap;
+}
+
+/* ---------- report rows with an inline action column ---------- */
+
+/* Two lines of metadata plus badges need more vertical room than the default row, and the
+   action column must not be squeezed to nothing on a phone. */
+.report-row--stacked {
+  align-items: flex-start;
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+.report-row--stacked .report-row__side {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+  min-width: 8rem;
+}
+@media (max-width: 640px) {
+  .report-row--stacked {
+    flex-wrap: wrap;
+  }
+  .report-row--stacked .report-row__side {
+    flex-direction: row;
+    align-items: center;
+    width: 100%;
+    min-width: 0;
+    justify-content: flex-start;
+  }
+}
+
+/* ---------- inline editor ---------- */
+
+/* Collapsed by default: an HOD opening an issue to read it should not be confronted with
+   four expanded forms. The header states the current value so the panel can stay closed. */
+.editor {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.editor__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-sunken);
+  border: 0;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.editor__head:hover {
+  background: var(--ink-100);
+}
+.editor__body {
+  padding: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+
+/* ---------- labelled radio ---------- */
+
+/* The whole row is the target, not just the 13px control. */
+.radio {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.radio:hover {
+  border-color: var(--teal-600);
+}
+.radio input {
+  margin-top: 3px;
+  flex: 0 0 auto;
+}
+.radio:has(input:checked) {
+  border-color: var(--teal-600);
+  background: var(--teal-50);
+}
+
+/* ---------- small stat pills (severity breakdown) ---------- */
+
+.pill-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-width: 6.5rem;
+}
+.pill-stat__value {
+  font-size: var(--text-xl);
+  font-weight: 700;
+  line-height: 1.1;
+}
+.pill-stat__label {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ---------- plain bullet list ---------- */
+
+.plain-list {
+  margin: 0;
+  padding-left: 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.plain-list li {
+  line-height: 1.55;
+}
+
+/* ---------- interactive table ---------- */
+
+/* Only says "these rows are clickable"; the click target itself is a real link inside the
+   row so keyboard users can reach it. Styling alone never makes a table row actionable. */
+.table--interactive tbody tr:hover {
+  background: var(--surface-sunken);
+}
+.table--interactive a {
+  text-decoration: none;
+}
+.table--interactive a:hover {
+  text-decoration: underline;
+}
+
+/* ---------- 3D twin ---------- */
+
+.twin {
+  position: relative;
+  width: 100%;
+  height: clamp(360px, 62vh, 640px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface-sunken);
+}
+.twin canvas {
+  display: block;
+  touch-action: none;
+}
+.twin__overlay {
+  position: absolute;
+  top: var(--space-3);
+  left: var(--space-3);
+  right: var(--space-3);
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  pointer-events: none;
+}
+.twin__notice {
+  pointer-events: auto;
+  max-width: 34rem;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+.twin__legend {
+  pointer-events: auto;
+  margin-left: auto;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-xs);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.twin__legend-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.twin__swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+}
+.twin__fallback {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: var(--space-5);
+  text-align: center;
+}
+
+/* ---------- chart frame ---------- */
+
+/* Recharts needs an explicit height on its container; a percentage alone collapses to 0. */
+.chart {
+  width: 100%;
+  height: 260px;
+}
+
+/* The review queue's "AI disagreed with the student" marker. Distinct from --ai (a neutral
+   purple for "this came from a model") because this one asks for a decision. */
+.badge--warning {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border-color: var(--status-submitted-border);
+}
+
+/* Hover label inside the 3D scene. Rendered through drei's <Html>, so it is real DOM —
+   selectable, readable by a screen reader, and unaffected by WebGL context loss. */
+.twin__label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  background: rgba(16, 22, 26, 0.92);
+  color: var(--white);
+  font-size: var(--text-xs);
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.twin__label span {
+  opacity: 0.85;
+}
+/* The hover readout sits in the overlay rather than inside the WebGL canvas: real DOM, so it
+   is unaffected by a lost WebGL context and never intercepts an orbit drag. */
+.twin__label--floating {
+  position: absolute;
+  top: 5.5rem;
+  left: var(--space-3);
+  z-index: 2;
+}

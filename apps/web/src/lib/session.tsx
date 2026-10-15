@@ -187,6 +187,19 @@ export function canAccess(path: string, role: Role): boolean {
   return allowed.includes(role);
 }
 
+/**
+ * Human-readable role name.
+ *
+ * Written out rather than derived from the code: "HOD" should read as "Head of Department",
+ * and no string transformation of the enum produces that. Keeping it here means a role is
+ * labelled the same way in the sidebar, the profile and any future screen.
+ */
+export function roleLabel(role: Role): string {
+  if (role === 'STUDENT') return 'Student';
+  if (role === 'HOD') return 'Head of Department';
+  return 'Administrator';
+}
+
 /** The landing page for a role after sign-in. */
 export function homePathFor(role: Role): string {
   if (role === 'STUDENT') return '/student';
