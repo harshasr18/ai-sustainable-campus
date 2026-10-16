@@ -23,8 +23,9 @@ async function main(): Promise<void> {
   try {
     const summary = await seedAll(db, {
       password: config.demoSeedPassword,
-      // A REAL-workspace admin is convenient locally; keep it out of production.
-      includeRealAdmin: config.nodeEnv !== 'production',
+      // A REAL-workspace admin is convenient locally; keep it out of production unless
+      // explicitly requested with SEED_REAL_ADMIN=true (used for the hosted hackathon demo).
+      includeRealAdmin: config.nodeEnv !== 'production' || process.env.SEED_REAL_ADMIN === 'true',
     });
 
     console.log(`Engine          : ${db.engine}`);
