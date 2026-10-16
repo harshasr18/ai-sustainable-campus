@@ -1,0 +1,32 @@
+# Render Blueprint: one web service (website + API together) and one Postgres database.
+services:
+  - type: web
+    name: ai-sustainable-campus
+    runtime: node
+    plan: free
+    buildCommand: npm install --include=dev && npm run web:build
+    startCommand: npm run start:prod
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: SERVE_WEB
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: campus-db
+          property: connectionString
+      - key: DEMO_SEED_PASSWORD
+        value: "CampusDemo#2026"
+      - key: AI_PROVIDER
+        value: unconfigured
+      - key: LOGIN_RATE_LIMIT_MAX
+        value: "30"
+
+databases:
+  - name: campus-db
+    plan: free
+    databaseName: campus
+    user: campus

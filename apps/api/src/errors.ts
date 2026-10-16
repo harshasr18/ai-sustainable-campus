@@ -10,6 +10,7 @@
  * leak a stack trace while the team retains full debuggability from the logs.
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { WebFallback } from './web-static.js';
 import { ZodError } from 'zod';
 import { DomainError } from '@campus/domain';
 
@@ -31,7 +32,7 @@ export function sendError(
   });
 }
 
-export function registerErrorHandler(app: FastifyInstance): void {
+export function registerErrorHandler(app: FastifyInstance, webFallback?: WebFallback | null): void {
   app.setErrorHandler((err, request, reply) => {
     // 1. Business/domain failures — deliberate, specific, safe to show.
     if (err instanceof DomainError) {
@@ -87,7 +88,13 @@ export function registerErrorHandler(app: FastifyInstance): void {
     return sendError(reply, request, 'INTERNAL_ERROR', 'An unexpected error occurred. Please try again.', 500);
   });
 
-  app.setNotFoundHandler((request, reply) =>
-    sendError(reply, request, 'NOT_FOUND', `No route matches ${request.method} ${request.url}.`, 404),
-  );
+  app.setNotFoundHandler((request, reply) => {
+    // Hosted deployment (SERVE_WEB=true): non-API GETs get the website. API paths and
+    // non-GET requests fall through to the normal JSON 404 below.
+    if (webFallback) {
+      const served = webFallback(request, reply);
+      if (served !== false) return served;
+    }
+    return sendError(reply, request, 'NOT_FOUND', `No route matches ${request.method} ${request.url}.`, 404);
+  });
 }

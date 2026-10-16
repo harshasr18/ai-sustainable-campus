@@ -24,3 +24,6 @@ storage/tmp/
 
 # A data directory that failed to open, kept for inspection by `npm run db:reset --keep`.
 .data/*.unreadable/
+
+# Not part of the source; the project folder sometimes contains a copy of itself.
+ai-sustainable-campus.zip

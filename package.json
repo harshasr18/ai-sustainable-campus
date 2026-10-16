@@ -17,6 +17,7 @@
     "db:reset:dry": "tsx scripts/db-reset.ts --dry-run",
     "dev": "tsx watch apps/api/src/server.ts",
     "start": "tsx apps/api/src/server.ts",
+    "start:prod": "tsx packages/db/src/cli-migrate.ts && tsx packages/db/src/cli-seed.ts && tsx apps/api/src/server.ts",
     "web": "npm run dev -w @campus/web",
     "web:build": "npm run build -w @campus/web",
     "test": "vitest run",

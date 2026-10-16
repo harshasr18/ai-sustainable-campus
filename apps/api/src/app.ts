@@ -31,6 +31,8 @@ import { registerAnalysisRoutes } from './routes/analysis.js';
 import { registerAnalyticsRoutes } from './routes/analytics.js';
 import { registerDuplicateRoutes } from './routes/duplicates.js';
 import { registerConsoleRoute } from './routes/console.js';
+import { createWebFallback } from './web-static.js';
+import path from 'node:path';
 
 export interface BuildAppOptions {
   db: Db;
@@ -128,7 +130,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     },
   });
 
-  registerErrorHandler(app);
+  // Hosted deployment: serve the built website from this same process (SERVE_WEB=true).
+  const webFallback =
+    process.env.SERVE_WEB === 'true'
+      ? createWebFallback(path.resolve(process.cwd(), 'apps/web/dist'))
+      : null;
+  registerErrorHandler(app, webFallback);
 
   /* ----------------------------- health ----------------------------- */
   app.get('/healthz', async () => {
@@ -174,8 +181,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   registerAnalysisRoutes(app, { db, ai });
   registerAnalyticsRoutes(app, { db });
   registerDuplicateRoutes(app, { db });
+  // The development API console owns `/` only when the website is not being served.
   // Development-only browser console at `/`. Never registered in production.
-  registerConsoleRoute(app, { config });
+  if (!webFallback) registerConsoleRoute(app, { config });
 
   return app;
 }
