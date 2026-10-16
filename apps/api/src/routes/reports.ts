@@ -5,19 +5,32 @@
  * a report can never exist without evidence. The route layer does only three things:
  * parse, validate, delegate. All business rules live in the domain service.
  */
+import { createHash, randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { CreateReportRequestSchema, TOKEN_POLICY, tokenCreditIdempotencyKey } from '@campus/contracts';
 import {
   canReadEvidence,
+  CaptureSessionAlreadyConsumed,
+  captureSessionExpired,
+  captureSessionInvalid,
+  evidenceReused,
   forbidden,
+  hashSessionToken,
   notFound,
   recordValidationOutcome,
   submitReport,
   validationFailed,
   type EvidenceStorage,
 } from '@campus/domain';
-import { reports as reportRepo, tokens as tokenRepo, type Db, type ReportRow } from '@campus/db';
+import {
+  captureSessions as captureRepo,
+  issues as issueRepo,
+  reports as reportRepo,
+  tokens as tokenRepo,
+  type Db,
+  type ReportRow,
+} from '@campus/db';
 import { actorOf, requireAuth } from '../auth-plugin.js';
 
 const IdParamsSchema = z.object({ id: z.uuid() });
@@ -33,7 +46,29 @@ const ReportFieldsSchema = CreateReportRequestSchema.extend({
   latitude: z.coerce.number().gte(-90).lte(90).optional(),
   longitude: z.coerce.number().gte(-180).lte(180).optional(),
   capturedAt: z.string().datetime({ offset: true }).optional(),
+  /** Server-issued ticket from POST /v1/reports/capture-sessions. Required. */
+  captureToken: z
+    .string({ error: 'captureToken is required — take the photo with the in-app camera.' })
+    .min(20, 'captureToken is malformed.')
+    .max(200, 'captureToken is malformed.'),
+  /** Client-reported capture details. Informational only; never trusted for a decision. */
+  captureMetadata: z
+    .object({
+      width: z.number().int().positive().max(20000).optional(),
+      height: z.number().int().positive().max(20000).optional(),
+      facingMode: z.string().max(40).optional(),
+      source: z.literal('getUserMedia').optional(),
+    })
+    .strict()
+    .optional(),
 });
+
+/** True when `error` is a Postgres unique violation on the named index. */
+function isUniqueViolation(error: unknown, indexName: string): boolean {
+  const e = error as { code?: string; constraint?: string; message?: string } | null;
+  if (!e || e.code !== '23505') return false;
+  return e.constraint === indexName || (e.message ?? '').includes(indexName);
+}
 
 const ValidationOutcomeSchema = z.object({
   validationStatus: z.enum(['AI_VALIDATED', 'HUMAN_VALIDATED', 'DUPLICATE_VALIDATED', 'REJECTED']),
@@ -47,9 +82,73 @@ const ValidationOutcomeSchema = z.object({
 
 export function registerReportRoutes(
   app: FastifyInstance,
-  deps: { db: Db; storage: EvidenceStorage; maxEvidenceBytes: number },
+  deps: { db: Db; storage: EvidenceStorage; maxEvidenceBytes: number; captureSessionTtlMinutes: number },
 ): void {
   const { db, storage } = deps;
+
+  /**
+   * The ONE response shape for a stored submission — used for a fresh report and for an
+   * idempotent replay, so a retried request cannot get a different-looking answer.
+   */
+  async function submissionResponse(
+    workspaceId: string,
+    reportId: string,
+    extra: { duplicateOfExistingIssue?: boolean; replayed: boolean },
+  ) {
+    const row = await reportRepo.findById(db, workspaceId, reportId);
+    if (!row) throw notFound('Report not found.');
+    const issue = row.issue_id ? await issueRepo.findById(db, workspaceId, row.issue_id) : null;
+    const credited = (await tokenRepo.latestCreditForReport(db, workspaceId, row.id))?.amount ?? 0;
+    return {
+      reportId: row.id,
+      issueId: row.issue_id,
+      issuePublicReference: issue?.public_reference ?? null,
+      duplicateOfExistingIssue: extra.duplicateOfExistingIssue ?? row.duplicate_match_status === 'LINKED',
+      duplicateMatchStatus: row.duplicate_match_status,
+      // Tokens are NOT awarded at submission time. The server credits them only after a
+      // successful validation (AI or human), through the idempotent ledger seam.
+      tokensAwarded: credited,
+      tokenPolicy: { tokensPerValidatedReport: TOKEN_POLICY.TOKENS_PER_VALIDATED_REPORT },
+      validationStatus: row.validation_status,
+      submittedAt: new Date(row.submitted_at).toISOString(),
+      /** True when this request repeated an already-stored submission (same capture ticket). */
+      replayed: extra.replayed,
+    };
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* POST /v1/reports/capture-sessions — ticket for ONE camera capture */
+  /* ---------------------------------------------------------------- */
+  /**
+   * Requested by the web app at the moment the shutter is pressed. The ticket is random,
+   * stored only as a hash, bound to the caller, valid for `captureSessionTtlMinutes`, and
+   * consumed by exactly one report. See migration 0009 for what this does and does not
+   * prove: it bounds WHEN the upload happened relative to a server clock and makes the
+   * submission idempotent; it cannot prove the bytes came from a camera.
+   */
+  app.post(
+    '/v1/reports/capture-sessions',
+    {
+      preHandler: requireAuth(db, 'STUDENT', 'HOD', 'ADMIN'),
+      config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+    },
+    async (request) => {
+      const actor = actorOf(request);
+      const captureToken = randomBytes(32).toString('base64url');
+      const session = await captureRepo.create(db, {
+        workspaceId: actor.workspaceId,
+        userId: actor.userId,
+        tokenHash: hashSessionToken(captureToken),
+        ttlMinutes: deps.captureSessionTtlMinutes,
+      });
+      return {
+        captureSessionId: session.id,
+        captureToken,
+        issuedAt: new Date(session.issued_at).toISOString(),
+        expiresAt: new Date(session.expires_at).toISOString(),
+      };
+    },
+  );
 
   /* ---------------------------------------------------------------- */
   /* POST /v1/reports — create a report with its photo                */
@@ -92,6 +191,10 @@ export function registerReportRoutes(
         typeof fields.reportingContext === 'string' && fields.reportingContext.length > 0
           ? safeJsonParse(fields.reportingContext)
           : undefined,
+      captureMetadata:
+        typeof fields.captureMetadata === 'string' && fields.captureMetadata.length > 0
+          ? safeJsonParse(fields.captureMetadata)
+          : undefined,
     });
     if (!parsed.success) {
       throw validationFailed(
@@ -100,6 +203,27 @@ export function registerReportRoutes(
       );
     }
 
+    // The capture ticket. Checked BEFORE the photo is written so a replay or a stale
+    // ticket never leaves an orphaned file in evidence storage.
+    const lookup = () =>
+      captureRepo.findForUser(db, {
+        workspaceId: actor.workspaceId,
+        userId: actor.userId,
+        tokenHash: hashSessionToken(parsed.data.captureToken),
+      });
+    const session = await lookup();
+    if (!session) throw captureSessionInvalid();
+    if (session.report_id) {
+      // Repeated tap / network retry: answer with the report that already exists.
+      request.log.info({ reportId: session.report_id }, 'report submission replayed (same capture ticket)');
+      return submissionResponse(actor.workspaceId, session.report_id, { replayed: true });
+    }
+    if (session.expired) throw captureSessionExpired();
+
+    // Byte-identical photograph already on file in this campus → not a new capture.
+    const evidenceSha256 = createHash('sha256').update(photo.buffer).digest('hex');
+    if (await reportRepo.findByEvidenceSha256(db, actor.workspaceId, evidenceSha256)) throw evidenceReused();
+
     // Validate + store the photo BEFORE the DB transaction (keeps locks short).
     const stored = await storage.save({
       buffer: photo.buffer,
@@ -107,7 +231,9 @@ export function registerReportRoutes(
       workspaceId: actor.workspaceId,
     });
 
-    const result = await submitReport(db, actor, {
+    let result: Awaited<ReturnType<typeof submitReport>>;
+    try {
+      result = await submitReport(db, actor, {
       blockId: parsed.data.blockId,
       spotId: parsed.data.spotId,
       selectedCategoryId: parsed.data.selectedCategoryId,
@@ -118,25 +244,29 @@ export function registerReportRoutes(
       longitude: parsed.data.longitude,
       reportingContext: parsed.data.reportingContext,
       evidenceStorageKey: stored.key,
+      captureSessionId: session.id,
+      captureMetadata: parsed.data.captureMetadata,
+      evidenceSha256,
     });
+    } catch (error) {
+      // A concurrent request with the same ticket won the race: replay its report.
+      if (error instanceof CaptureSessionAlreadyConsumed || isUniqueViolation(error, 'ux_reports_capture_session')) {
+        const again = await lookup();
+        if (again?.report_id) return submissionResponse(actor.workspaceId, again.report_id, { replayed: true });
+      }
+      if (isUniqueViolation(error, 'ux_reports_evidence_sha256')) throw evidenceReused();
+      throw error;
+    }
 
     request.log.info(
       { reportId: result.reportId, issueId: result.issueId, duplicate: !result.createdNewIssue },
       'report submitted',
     );
 
-    return {
-      reportId: result.reportId,
-      issueId: result.issueId,
-      issuePublicReference: result.issuePublicReference,
+    return submissionResponse(actor.workspaceId, result.reportId, {
       duplicateOfExistingIssue: !result.createdNewIssue,
-      duplicateMatchStatus: result.duplicateMatchStatus,
-      // Explicit: tokens are NOT awarded at submission time. A trusted server-side
-      // validation step must run first (brief Step C).
-      tokensAwarded: 0,
-      tokenPolicy: { tokensPerValidatedReport: TOKEN_POLICY.TOKENS_PER_VALIDATED_REPORT },
-      validationStatus: 'PENDING',
-    };
+      replayed: false,
+    });
   });
 
   /* ---------------------------------------------------------------- */

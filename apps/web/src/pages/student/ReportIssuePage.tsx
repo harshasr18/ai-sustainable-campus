@@ -21,12 +21,13 @@
  *    would be the worst possible bug in a system whose whole purpose is trustworthy records.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api, ApiError } from '../../lib/api.js';
 import { useAsync } from '../../lib/useAsync.js';
 import type {
   Block,
+  CaptureSessionResponse,
   Category,
   Paginated,
   Spot,
@@ -74,6 +75,21 @@ export function ReportIssuePage() {
   const [geoNote, setGeoNote] = useState<string | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
+  /**
+   * Synchronous double-tap guard. `submitting` is React state, so two taps inside one frame
+   * can both read `false` before the re-render; the ref flips immediately. The server is
+   * the real guarantee — one capture ticket yields one report — this just avoids the
+   * second request altogether.
+   */
+  const submitLock = useRef(false);
+
+  /**
+   * The server-issued capture ticket for the CURRENT photograph (migration 0009). Requested
+   * the moment the shutter is pressed, discarded on retake. Without it there is nothing to
+   * submit: the server refuses a report that does not carry one.
+   */
+  const [ticket, setTicket] = useState<CaptureSessionResponse | null>(null);
+  const [ticketError, setTicketError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<ApiError | Error | null>(null);
   const [result, setResult] = useState<SubmitReportResponse | null>(null);
 
@@ -113,7 +129,38 @@ export function ReportIssuePage() {
   const selectedSpot = spots.data?.items.find((spot) => spot.id === spotId);
   const selectedCategory = categories.data?.items.find((category) => category.id === categoryId);
 
-  const canLeavePhotoStep = camera.photo !== null;
+  const canLeavePhotoStep = camera.photo !== null && ticket !== null;
+
+  async function handleShutter() {
+    setTicket(null);
+    setTicketError(null);
+    // Ask for the ticket and grab the frame together: the frame is what the student saw
+    // when they pressed the button, and the ticket's server timestamp brackets it.
+    const ticketRequest = api.post<CaptureSessionResponse>('/v1/reports/capture-sessions');
+    await camera.capture();
+    try {
+      setTicket(await ticketRequest);
+    } catch (caught) {
+      // No ticket, no report. Throw the photo away rather than keep one that cannot be sent.
+      camera.retake();
+      setTicketError(
+        caught instanceof ApiError
+          ? `The photo could not be registered with the server (${caught.message}). Start the camera and try again.`
+          : 'The photo could not be registered with the server. Check your connection, then start the camera and try again.',
+      );
+    }
+  }
+
+  function handleRetake() {
+    setTicket(null);
+    setTicketError(null);
+    camera.retake();
+  }
+
+  /** Errors after which the only remedy is a new photograph. */
+  const needsRetake =
+    submitError instanceof ApiError &&
+    ['CAPTURE_SESSION_EXPIRED', 'CAPTURE_SESSION_INVALID', 'EVIDENCE_REUSED'].includes(submitError.code);
   const canLeaveLocationStep = Boolean(blockId && spotId);
   const canLeaveCategoryStep = Boolean(categoryId);
   const trimmedTitle = title.trim();
@@ -131,7 +178,8 @@ export function ReportIssuePage() {
    * never exist without its evidence.
    */
   async function handleSubmit() {
-    if (!camera.photo || submitting) return;
+    if (!camera.photo || !ticket || submitting || submitLock.current) return;
+    submitLock.current = true;
 
     setSubmitting(true);
     setSubmitError(null);
@@ -151,7 +199,19 @@ export function ReportIssuePage() {
         form.append('latitude', String(coords.latitude));
         form.append('longitude', String(coords.longitude));
       }
-      form.append('capturedAt', new Date().toISOString());
+      // Device clock at the shutter press — stored as UNTRUSTED evidence. The server's own
+      // submitted_at and the ticket's issued_at are the authoritative timestamps.
+      form.append('capturedAt', camera.photo.capturedAt);
+      form.append('captureToken', ticket.captureToken);
+      form.append(
+        'captureMetadata',
+        JSON.stringify({
+          width: camera.photo.width,
+          height: camera.photo.height,
+          source: 'getUserMedia',
+          ...(camera.photo.facingMode ? { facingMode: camera.photo.facingMode } : {}),
+        }),
+      );
 
       const response = await api.postForm<SubmitReportResponse>('/v1/reports', form);
       setResult(response);
@@ -161,6 +221,7 @@ export function ReportIssuePage() {
       // press submit again. Nothing is cleared, and no success is claimed.
       setSubmitError(caught instanceof Error ? caught : new Error('Submission failed.'));
     } finally {
+      submitLock.current = false;
       setSubmitting(false);
     }
   }
@@ -252,7 +313,7 @@ export function ReportIssuePage() {
                   <button
                     type="button"
                     className="camera__shutter"
-                    onClick={() => void camera.capture()}
+                    onClick={() => void handleShutter()}
                     disabled={camera.status !== 'live' || !camera.ready}
                     aria-label="Capture photograph"
                     title={camera.status === 'live' && camera.ready ? 'Take the photograph' : 'Waiting for the camera'}
@@ -276,13 +337,25 @@ export function ReportIssuePage() {
                       {camera.photo!.width}×{camera.photo!.height} · {(camera.photo!.bytes / 1024).toFixed(0)} KB
                     </p>
                   </div>
-                  <button type="button" className="btn btn--secondary" onClick={camera.retake}>
+                  <button type="button" className="btn btn--secondary" onClick={handleRetake}>
                     Retake
                   </button>
                 </>
               )}
             </div>
           </div>
+
+          {camera.status === 'captured' && !ticket && !ticketError && (
+            <p className="small muted mt-3" role="status">Registering the photo with the server…</p>
+          )}
+
+          {ticketError && (
+            <div className="mt-4">
+              <InlineAlert variant="error" title="Photo not registered">
+                {ticketError}
+              </InlineAlert>
+            </div>
+          )}
 
           {camera.errorMessage && (
             <div className="mt-4">
@@ -547,10 +620,29 @@ export function ReportIssuePage() {
                   <span className="mono"> (request {submitError.requestId})</span>
                 )}
               </InlineAlert>
-              <p className="small muted mt-3">
-                Nothing was lost — your photograph and details are still here. Fix the problem above or
-                press Submit again.
-              </p>
+              {needsRetake ? (
+                <div className="mt-3">
+                  <p className="small muted">
+                    Your location, category and title are kept. Only the photograph has to be taken again.
+                  </p>
+                  <button
+                    type="button"
+                    className="btn btn--secondary mt-2"
+                    onClick={() => {
+                      handleRetake();
+                      setSubmitError(null);
+                      setStep('photo');
+                    }}
+                  >
+                    Retake photo
+                  </button>
+                </div>
+              ) : (
+                <p className="small muted mt-3">
+                  Nothing was lost — your photograph and details are still here. Fix the problem above or
+                  press Submit again.
+                </p>
+              )}
             </div>
           )}
 

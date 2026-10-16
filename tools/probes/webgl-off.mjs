@@ -1,0 +1,22 @@
+// Probe: admin twin page with WebGL disabled. Prints visible text + console errors.
+import { chromium } from 'playwright';
+const BASE = process.env.WEB_BASE ?? 'http://localhost:5173';
+const browser = await chromium.launch({ args: ['--disable-webgl', '--disable-webgl2', '--disable-gpu', '--no-sandbox'] });
+const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+const errors = [];
+page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
+page.on('console', (m) => m.type() === 'error' && errors.push('console: ' + m.text().slice(0, 200)));
+await page.goto(`${BASE}/login`);
+await page.fill('input[type="email"]', 'admin@demo.dsu.edu.in');
+await page.fill('input[type="password"]', 'CampusDemo#2026');
+await page.click('button[type="submit"]');
+await page.waitForURL((u) => !u.pathname.startsWith('/login'), { timeout: 15000 });
+await page.goto(`${BASE}${process.argv[2] ?? '/admin/twin'}`);
+await page.waitForTimeout(4000);
+const text = (await page.locator('main').innerText().catch(() => '(no <main>)')).slice(0, 900);
+console.log('URL', page.url());
+console.log('MAIN TEXT:\n' + text);
+console.log('BODY LEN', (await page.locator('body').innerText()).length);
+console.log('ERRORS:\n' + errors.slice(0, 6).join('\n'));
+await page.screenshot({ path: '.artifacts/webgl-off.png' });
+await browser.close();

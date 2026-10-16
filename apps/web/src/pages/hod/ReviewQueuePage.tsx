@@ -30,7 +30,8 @@
 import { Link } from 'react-router-dom';
 import { api, query } from '../../lib/api.js';
 import { useAsync } from '../../lib/useAsync.js';
-import type { ReviewQueueResponse } from '../../lib/types.js';
+import type { DuplicateSuggestion, ReviewQueueResponse } from '../../lib/types.js';
+import { DuplicateSuggestionList } from '../../components/DuplicateSuggestions.js';
 import { Card } from '../../components/data.js';
 import { EmptyPane, ErrorPane, InlineAlert, SkeletonRows } from '../../components/states.js';
 import { AiTag } from '../../components/badges.js';
@@ -50,6 +51,14 @@ export function ReviewQueuePage() {
     [],
   );
 
+  const dupes = useAsync(
+    (signal) => api.get<{ count: number; items: DuplicateSuggestion[] }>('/v1/duplicate-suggestions', { signal }),
+    [],
+  );
+  const reloadAll = () => {
+    queue.reload();
+    dupes.reload();
+  };
   const items = queue.data?.items ?? [];
   const truncated = (queue.data?.count ?? 0) >= LIMIT;
   const ai = queue.data?.ai;
@@ -82,6 +91,25 @@ export function ReviewQueuePage() {
           </InlineAlert>
         </div>
       )}
+
+      {/* Possible duplicates — a separate decision from the AI verdict. Shown first because a
+          confirmed merge changes which issue the HOD should act on. */}
+      <div className="mb-5">
+        <Card
+          title={`Possible duplicates${dupes.data ? ` (${dupes.data.count})` : ''}`}
+          subtitle="Found by a rule over block, spot and category — never by photo similarity alone. You decide; nothing is merged automatically."
+        >
+          {dupes.error ? (
+            <ErrorPane error={dupes.error} onRetry={dupes.reload} />
+          ) : dupes.loading && !dupes.data ? (
+            <SkeletonRows rows={2} />
+          ) : (dupes.data?.items.length ?? 0) === 0 ? (
+            <p className="small muted mt-0 mb-0">No open duplicate suggestions.</p>
+          ) : (
+            <DuplicateSuggestionList suggestions={dupes.data!.items} onDecided={reloadAll} showSource />
+          )}
+        </Card>
+      </div>
 
       {queue.error ? (
         <ErrorPane error={queue.error} onRetry={queue.reload} />
@@ -215,11 +243,11 @@ export function ReviewQueuePage() {
 
           <div className="mt-5">
             <InlineAlert variant="info" title="What happens to a report after review">
-              A human verdict is recorded through{' '}
-              <code className="mono">POST /v1/reports/:id/validation</code>, which is also the only
-              place tokens are awarded — 10 per validated report, including a valid duplicate. The
-              confirmation panel for that decision lands with Phase 2 Stage 5–6, alongside duplicate
-              detection and severity, so that nothing about this screen is simulated in the meantime.
+              Open the issue and use “Validate…” on a report: validating credits the student 10 tokens
+              through the server ledger (once per report, duplicates included); rejecting credits
+              nothing. Reports the model accepted on its own — confident, and agreeing with the
+              student’s category — were already AI-validated and credited by the server; they never
+              appear here. Severity and repair advice are not produced by the current model.
             </InlineAlert>
           </div>
         </>

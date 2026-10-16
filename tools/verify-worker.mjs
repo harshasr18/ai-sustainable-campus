@@ -21,6 +21,7 @@
  *   node tools/verify-worker.mjs path/to.jpg
  */
 
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -116,7 +117,11 @@ async function main() {
   form.set('description', 'Automated verification of the background analysis worker.');
   form.set('latitude', '12.8612');
   form.set('longitude', '77.5525');
-  form.set('photo', new Blob([photo], { type: 'image/jpeg' }), 'capture.jpg');
+  // Server-issued capture ticket (migration 0009) and a distinct photograph per run —
+  // the server refuses byte-identical photos; decoders ignore bytes after the JPEG end marker.
+  const ticketRes = await api('POST', '/v1/reports/capture-sessions', { token: student });
+  form.set('captureToken', ticketRes.body.captureToken);
+  form.set('photo', new Blob([Buffer.concat([photo, randomBytes(12)])], { type: 'image/jpeg' }), 'capture.jpg');
 
   const submitted = await api('POST', '/v1/reports', { token: student, form });
   check('report accepted', submitted.status === 200, `issue=${submitted.body.issuePublicReference}`);

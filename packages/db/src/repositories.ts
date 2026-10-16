@@ -67,7 +67,8 @@ export interface IssueRow {
   description: string | null;
   category_id: string;
   severity: string | null;
-  status: 'SUBMITTED' | 'APPROVED' | 'IN_PROGRESS' | 'RESOLVED';
+  status: 'SUBMITTED' | 'APPROVED' | 'IN_PROGRESS' | 'RESOLVED' | 'DUPLICATE';
+  duplicate_of_issue_id: string | null;
   block_id: string;
   spot_id: string;
   claimed_by_user_id: string | null;
@@ -105,6 +106,9 @@ export interface ReportRow {
   submitted_at: Date | string;
   evidence_storage_key: string | null;
   reporting_context: unknown;
+  capture_session_id: string | null;
+  capture_metadata: unknown;
+  evidence_sha256: string | null;
 }
 
 export interface TokenTxnRow {
@@ -301,15 +305,76 @@ export interface CreateReportInput {
   longitude?: number | null;
   reportingContext?: unknown;
   evidenceStorageKey?: string | null;
+  /** Server-issued capture ticket this report consumed (0009). */
+  captureSessionId?: string | null;
+  /** Client-reported capture details (dimensions, facing mode). Untrusted, informational. */
+  captureMetadata?: unknown;
+  /** sha256 of the stored photograph, computed by the server. */
+  evidenceSha256?: string | null;
 }
+
+export interface CaptureSessionRow {
+  id: string;
+  workspace_id: string;
+  user_id: string;
+  issued_at: Date;
+  expires_at: Date;
+  consumed_at: Date | null;
+  report_id: string | null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Capture sessions (0009)                                             */
+/* ------------------------------------------------------------------ */
+
+export const captureSessions = {
+  async create(
+    conn: Conn,
+    input: { workspaceId: string; userId: string; tokenHash: string; ttlMinutes: number },
+  ): Promise<CaptureSessionRow> {
+    const r = await conn.query<CaptureSessionRow>(
+      `INSERT INTO capture_sessions (workspace_id, user_id, token_hash, expires_at)
+       VALUES ($1, $2, $3, now() + make_interval(mins => $4::int))
+       RETURNING id, workspace_id, user_id, issued_at, expires_at, consumed_at, report_id`,
+      [input.workspaceId, input.userId, input.tokenHash, input.ttlMinutes],
+    );
+    return r.rows[0]!;
+  },
+
+  /** Looks a ticket up for its owner only. `forUpdate` serialises concurrent consumers. */
+  async findForUser(
+    conn: Conn,
+    input: { workspaceId: string; userId: string; tokenHash: string; forUpdate?: boolean },
+  ): Promise<(CaptureSessionRow & { expired: boolean }) | null> {
+    const r = await conn.query<CaptureSessionRow & { expired: boolean }>(
+      `SELECT id, workspace_id, user_id, issued_at, expires_at, consumed_at, report_id,
+              (expires_at <= now()) AS expired
+         FROM capture_sessions
+        WHERE token_hash = $1 AND workspace_id = $2 AND user_id = $3
+        ${input.forUpdate ? 'FOR UPDATE' : ''}`,
+      [input.tokenHash, input.workspaceId, input.userId],
+    );
+    return r.rows[0] ?? null;
+  },
+
+  async consume(conn: Conn, sessionId: string, reportId: string): Promise<boolean> {
+    const r = await conn.query(
+      `UPDATE capture_sessions SET consumed_at = now(), report_id = $2
+        WHERE id = $1 AND consumed_at IS NULL`,
+      [sessionId, reportId],
+    );
+    return r.rowCount > 0;
+  },
+};
 
 export const reports = {
   async create(conn: Conn, input: CreateReportInput): Promise<ReportRow> {
     const r = await conn.query<ReportRow>(
       `INSERT INTO reports
          (workspace_id, reporter_user_id, block_id, spot_id, selected_category_id,
-          captured_at, latitude, longitude, reporting_context, evidence_storage_key)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+          captured_at, latitude, longitude, reporting_context, evidence_storage_key,
+          capture_session_id, capture_metadata, evidence_sha256)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        RETURNING *`,
       [
         input.workspaceId,
@@ -322,9 +387,20 @@ export const reports = {
         input.longitude ?? null,
         input.reportingContext ? JSON.stringify(input.reportingContext) : null,
         input.evidenceStorageKey ?? null,
+        input.captureSessionId ?? null,
+        input.captureMetadata ? JSON.stringify(input.captureMetadata) : null,
+        input.evidenceSha256 ?? null,
       ],
     );
     return r.rows[0]!;
+  },
+
+  async findByEvidenceSha256(conn: Conn, workspaceId: string, sha256: string): Promise<ReportRow | null> {
+    const r = await conn.query<ReportRow>(
+      `SELECT * FROM reports WHERE workspace_id = $1 AND evidence_sha256 = $2 LIMIT 1`,
+      [workspaceId, sha256],
+    );
+    return r.rows[0] ?? null;
   },
 
   async findById(conn: Conn, workspaceId: string, reportId: string): Promise<ReportRow | null> {
@@ -369,12 +445,15 @@ export const reports = {
     return r.rows;
   },
 
+  /**
+   * Attaches a report to its master issue. Does NOT touch duplicate_match_status: the caller
+   * sets that to NOT_CHECKED (this report opened the issue) or LINKED (it joined one).
+   * Phase 5 fix — this used to force 'LINKED' unconditionally, so the report that OPENED an
+   * issue was stored as a duplicate of itself, and every first report read back as LINKED.
+   */
   async linkToIssue(conn: Conn, workspaceId: string, reportId: string, issueId: string): Promise<void> {
     await conn.query(
-      `UPDATE reports
-          SET issue_id = $3,
-              duplicate_match_status = CASE WHEN duplicate_match_status = 'LINKED' THEN duplicate_match_status ELSE 'LINKED' END
-        WHERE id = $1 AND workspace_id = $2`,
+      `UPDATE reports SET issue_id = $3 WHERE id = $1 AND workspace_id = $2`,
       [reportId, workspaceId, issueId],
     );
   },
@@ -517,7 +596,7 @@ export const issues = {
          (workspace_id, public_reference, title, description, category_id, severity,
           block_id, spot_id, created_by_user_id, due_at, dedupe_key)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-       ON CONFLICT (workspace_id, dedupe_key) WHERE status <> 'RESOLVED' DO NOTHING
+       ON CONFLICT (workspace_id, dedupe_key) WHERE status NOT IN ('RESOLVED','DUPLICATE') DO NOTHING
        RETURNING id`,
       [
         input.workspaceId,
@@ -543,7 +622,7 @@ export const issues = {
     const existing = await conn.query<IssueRow & { claimed_by_display_name: string | null; report_count: string }>(
       `SELECT ${ISSUE_SELECT} FROM issues i
          LEFT JOIN users cu ON cu.id = i.claimed_by_user_id
-        WHERE i.workspace_id = $1 AND i.dedupe_key = $2 AND i.status <> 'RESOLVED'`,
+        WHERE i.workspace_id = $1 AND i.dedupe_key = $2 AND i.status NOT IN ('RESOLVED','DUPLICATE')`,
       [input.workspaceId, input.dedupeKey],
     );
     if (!existing.rows[0]) {
@@ -617,11 +696,13 @@ export const issues = {
     };
 
     if (filters.status) add('i.status = $?', filters.status);
+    // Merged tickets are hidden unless asked for by name: their reports are on the master.
+    else where.push(`i.status <> 'DUPLICATE'`);
     if (filters.blockId) add('i.block_id = $?', filters.blockId);
     if (filters.categoryId) add('i.category_id = $?', filters.categoryId);
     if (filters.claimedByUserId) add('i.claimed_by_user_id = $?', filters.claimedByUserId);
     // Overdue derives from the CONFIGURED due_at, so no threshold is hardcoded here.
-    if (filters.overdueOnly) where.push(`i.status <> 'RESOLVED' AND i.due_at < now()`);
+    if (filters.overdueOnly) where.push(`i.status NOT IN ('RESOLVED','DUPLICATE') AND i.due_at < now()`);
 
     // Severity filtering (Phase 3 gap G4). 'UNSET' is a sentinel for "no severity recorded",
     // because a NULL is not equal to anything and a filter that silently matched nothing

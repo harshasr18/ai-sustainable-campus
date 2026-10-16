@@ -37,7 +37,7 @@ import {
   type Db,
 } from '@campus/db';
 import { actorOf, requireAuth } from '../auth-plugin.js';
-import { outboxPublisher } from '@campus/domain';
+import { listOpenSuggestionsForReports, outboxPublisher, recordDuplicateSuggestions, recordValidationOutcomeInTx } from '@campus/domain';
 
 const IdParamsSchema = z.object({ id: z.uuid() });
 
@@ -131,6 +131,13 @@ export function registerAnalysisRoutes(
       const actor = actorOf(request);
       const { limit } = request.query as { limit: number };
       const items = await analysisRepo.listNeedingReview(db, actor.workspaceId, limit);
+      const suggestions = await listOpenSuggestionsForReports(
+        db,
+        actor.workspaceId,
+        items.map((row) => row.report_id),
+      );
+      const byReport = new Map<string, typeof suggestions>();
+      for (const sug of suggestions) byReport.set(sug.reportId, [...(byReport.get(sug.reportId) ?? []), sug]);
       return {
         count: items.length,
         ai: {
@@ -149,6 +156,8 @@ export function registerAnalysisRoutes(
           confidence: row.confidence,
           categoryMatchesChoice: row.category_matches_choice,
           duplicateCandidates: row.duplicate_candidates,
+          /** OPEN server-rule suggestions for this report, decided via /v1/duplicate-suggestions. */
+          duplicateSuggestions: byReport.get(row.report_id) ?? [],
           createdAt: new Date(row.created_at).toISOString(),
         })),
       };
@@ -188,6 +197,12 @@ export interface RunAnalysisResult {
   errorMessage: string | null;
   latencyMs: number;
   attempts: number;
+  /** Open duplicate suggestions recorded by this run (0 on failure). */
+  duplicateSuggestions?: number;
+  /** True when the server's AI-validation policy validated the report in this run. */
+  autoValidated?: boolean;
+  /** Tokens credited by THIS run (0 when not validated or already credited). */
+  tokensAwarded?: number;
 }
 
 /**
@@ -257,7 +272,7 @@ export async function runAnalysis(
     const result = await ai.analyze(analysisRequest);
     const latencyMs = Date.now() - startedAt;
 
-    await persistSuccess(db, {
+    const persisted = await persistSuccess(db, {
       workspaceId,
       reportId,
       result,
@@ -269,16 +284,19 @@ export async function runAnalysis(
 
     return {
       reportId,
-      status: result.status,
+      status: persisted.status,
       provider: result.provider,
       model: result.model,
       predictedCategoryId: result.predictedCategoryId,
       confidence: result.confidence,
-      requiresHumanReview: result.requiresHumanReview,
+      requiresHumanReview: persisted.requiresReview,
       errorCode: null,
       errorMessage: null,
       latencyMs,
       attempts: 1,
+      duplicateSuggestions: persisted.duplicateSuggestions,
+      autoValidated: persisted.autoValidated,
+      tokensAwarded: persisted.tokensAwarded,
     };
   } catch (error) {
     const failure = describeAiFailure(error);
@@ -332,9 +350,27 @@ async function persistSuccess(
     selectedCategoryId: string;
     workspaceKind: 'REAL' | 'DEMO';
   },
-): Promise<void> {
-  await db.withTransaction(async (tx) => {
+): Promise<PersistOutcome> {
+  return db.withTransaction(async (tx) => {
     const { result } = input;
+    const report = await reportRepo.findById(tx, input.workspaceId, input.reportId);
+
+    // 1. Duplicate suggestions — a SERVER rule over location + category signals, not model
+    //    output (packages/domain/src/duplicates.ts). An open suggestion goes to an HOD, who
+    //    alone can merge. It does NOT hold back validation: the business rule credits every
+    //    AI-validated submission, duplicates included — a duplicate question is about WHICH
+    //    master issue a report belongs to, not about whether the report is genuine.
+    const duplicateSuggestions = report
+      ? await recordDuplicateSuggestions(tx, {
+          workspaceId: input.workspaceId,
+          workspaceKind: input.workspaceKind,
+          report,
+          predictedCategoryId: result.predictedCategoryId,
+          aiConfidence: result.confidence,
+        })
+      : 0;
+    const requiresReview = result.requiresHumanReview;
+    const status = result.status;
 
     await analysisRepo.insert(tx, {
       workspaceId: input.workspaceId,
@@ -342,14 +378,14 @@ async function persistSuccess(
       provider: result.provider,
       model: result.model,
       modelVersion: result.modelVersion,
-      status: result.status,
+      status,
       predictedCategoryId: result.predictedCategoryId,
       categoryMatchesChoice: result.categoryMatchesStudentSelection,
       confidence: result.confidence,
       severity: result.severity,
       repairRecommendation: result.repairRecommendation,
       duplicateCandidates: result.duplicateCandidates,
-      requiresHumanReview: result.requiresHumanReview,
+      requiresHumanReview: requiresReview,
       errorMessage: null,
       latencyMs: input.latencyMs,
     });
@@ -373,8 +409,9 @@ async function persistSuccess(
       after: {
         aiPredictedCategoryId: result.predictedCategoryId,
         confidence: result.confidence,
-        status: result.status,
+        status,
         model: result.model,
+        duplicateSuggestions,
       },
       reason: `model ${result.provider}/${result.model}@${result.modelVersion}`,
     });
@@ -389,16 +426,16 @@ async function persistSuccess(
       actorUserId: input.actorUserId,
       payload: {
         reportId: input.reportId,
-        status: result.status,
+        status,
         predictedCategoryId: result.predictedCategoryId,
         confidence: result.confidence,
-        requiresHumanReview: result.requiresHumanReview,
-        duplicateCandidateCount: result.duplicateCandidates.length,
+        requiresHumanReview: requiresReview,
+        duplicateCandidateCount: duplicateSuggestions,
         model: result.model,
       },
     });
 
-    if (result.requiresHumanReview) {
+    if (requiresReview) {
       await outboxPublisher.publish(tx, {
         eventType: 'report.review_required',
         workspaceId: input.workspaceId,
@@ -414,7 +451,51 @@ async function persistSuccess(
         },
       });
     }
+
+    // 2. AI-validation policy (business rule: 10 tokens per successfully AI-validated
+    //    submission, duplicate-linked ones included). Deterministic and server-side: the
+    //    model's output only supplies facts that were schema-validated above. A report is
+    //    AI-validated when ALL of these hold —
+    //      * the analysis is SUCCEEDED, i.e. confidence >= AI_REVIEW_CONFIDENCE_THRESHOLD and
+    //        no near-tie between the top two labels;
+    //      * the model's category equals the student's category;
+    //      * nobody has decided the report yet (validation_status is still PENDING).
+    //    The credit goes through the same idempotent seam a human uses, inside this
+    //    transaction, keyed by report id — a worker retry or a manual re-run cannot credit
+    //    twice. Anything short of this waits for an HOD.
+    let autoValidated = false;
+    let tokensAwarded = 0;
+    if (
+      report &&
+      status === 'SUCCEEDED' &&
+      result.categoryMatchesStudentSelection === true &&
+      report.validation_status === 'PENDING'
+    ) {
+      const outcome = await recordValidationOutcomeInTx(
+        tx,
+        { workspaceId: input.workspaceId, workspaceKind: input.workspaceKind, actorUserId: null },
+        {
+          reportId: input.reportId,
+          validationStatus: 'AI_VALIDATED',
+          reason:
+            `Automatic: ${result.model} agreed with the student's category ` +
+            `(score ${result.confidence?.toFixed(3)} >= ${AI_REVIEW_CONFIDENCE_THRESHOLD})`,
+        },
+      );
+      autoValidated = true;
+      tokensAwarded = outcome.tokensAwarded;
+    }
+
+    return { status, requiresReview, duplicateSuggestions, autoValidated, tokensAwarded };
   });
+}
+
+interface PersistOutcome {
+  status: AiAnalysisResult['status'];
+  requiresReview: boolean;
+  duplicateSuggestions: number;
+  autoValidated: boolean;
+  tokensAwarded: number;
 }
 
 /** Persists an explicit, dated failure. Deliberately does NOT touch validation_status. */

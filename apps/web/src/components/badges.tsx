@@ -35,6 +35,11 @@ const ISSUE_STATUS: Record<string, { label: string; modifier: string; descriptio
     modifier: 'resolved',
     description: 'Work completed and a resolution note recorded.',
   },
+  DUPLICATE: {
+    label: 'Merged',
+    modifier: 'neutral',
+    description: 'An HOD confirmed this is the same defect as another issue; its reports were moved there.',
+  },
 };
 
 export function StatusBadge({ status }: { status: string | null | undefined }) {
@@ -161,7 +166,7 @@ const DUPLICATE_STATE: Record<string, { label: string; modifier: string; title: 
   NO_MATCH: {
     label: 'No duplicate found',
     modifier: 'neutral',
-    title: 'No other report matches this defect.',
+    title: 'The duplicate check found no other open issue in this block that looks like the same defect.',
   },
   CANDIDATE_FOUND: {
     label: 'Possible duplicate',
@@ -171,12 +176,12 @@ const DUPLICATE_STATE: Record<string, { label: string; modifier: string; title: 
   LINKED: {
     label: 'Linked to a master issue',
     modifier: 'progress',
-    title: 'This report is one of several covering the same defect.',
+    title: 'Attached to the ticket for the same defect. The report keeps its own photo and token credit.',
   },
   HUMAN_OVERRIDDEN: {
-    label: 'Reviewed by a person',
+    label: 'Kept separate',
     modifier: 'approved',
-    title: 'A person reviewed and decided this duplicate suggestion.',
+    title: 'A person reviewed the possible duplicate and kept this as its own issue.',
   },
 };
 

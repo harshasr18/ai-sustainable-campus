@@ -25,9 +25,10 @@ export function toIssueDto(row: IssueRow, now: Date = new Date()): Issue {
     startedAt: toIso(row.started_at),
     resolvedAt: toIso(row.resolved_at),
     resolutionNote: row.resolution_note,
+    duplicateOfIssueId: row.duplicate_of_issue_id ?? null,
     dueAt,
     // Derived from the CONFIGURED due_at; no threshold is hardcoded in a client.
-    overdue: row.status !== 'RESOLVED' && new Date(dueAt).getTime() < now.getTime(),
+    overdue: row.status !== 'RESOLVED' && row.status !== 'DUPLICATE' && new Date(dueAt).getTime() < now.getTime(),
     version: row.version,
     reportCount: Number(row.report_count ?? 0),
     createdAt: toIso(row.created_at)!,

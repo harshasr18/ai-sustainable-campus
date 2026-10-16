@@ -87,7 +87,7 @@ export function registerIntegrationRoutes(
 
     const overdue = await db.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM issues
-        WHERE workspace_id = $1 AND status <> 'RESOLVED' AND due_at < now()`,
+        WHERE workspace_id = $1 AND status NOT IN ('RESOLVED','DUPLICATE') AND due_at < now()`,
       [actor.workspaceId],
     );
 

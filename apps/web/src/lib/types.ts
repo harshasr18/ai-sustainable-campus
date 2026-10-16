@@ -103,6 +103,8 @@ export interface Issue {
   startedAt: string | null;
   resolvedAt: string | null;
   resolutionNote: string | null;
+  /** Set only when status is DUPLICATE: the master issue this ticket was merged into. */
+  duplicateOfIssueId?: string | null;
   dueAt: string;
   /** Computed server-side from the configurable overdue threshold. Never recomputed here. */
   overdue: boolean;
@@ -264,6 +266,18 @@ export interface SubmitReportResponse {
   tokensAwarded: number;
   tokenPolicy: { tokensPerValidatedReport: number };
   validationStatus: string;
+  /** Server clock at which the report was stored. */
+  submittedAt: string;
+  /** True when this request repeated an already-stored submission (same capture ticket). */
+  replayed: boolean;
+}
+
+/** `POST /v1/reports/capture-sessions` — one ticket per shutter press. */
+export interface CaptureSessionResponse {
+  captureSessionId: string;
+  captureToken: string;
+  issuedAt: string;
+  expiresAt: string;
 }
 
 /** `GET /v1/reports/:id/analysis` */
@@ -370,4 +384,25 @@ export interface ReviewQueueResponse {
     humanReviewConfidenceThreshold: number;
   };
   items: ReviewQueueItem[];
+}
+
+/** A POSSIBLE duplicate found by the server rule (migration 0010). Decided by an HOD/ADMIN. */
+export interface DuplicateSuggestion {
+  id: string;
+  reportId: string;
+  sourceIssueId: string;
+  sourceIssueReference: string;
+  candidateIssueId: string;
+  candidateIssueReference: string;
+  candidateStatus: string;
+  candidateSpotName: string | null;
+  candidateCategoryName: string | null;
+  candidateReportCount: number;
+  reasonCode: 'SAME_SPOT_AI_CATEGORY' | 'SAME_BLOCK_SAME_CATEGORY_RECENT';
+  /** The boolean facts that fired. There is deliberately no similarity score. */
+  signals: Record<string, unknown>;
+  status: 'OPEN' | 'CONFIRMED' | 'DISMISSED' | 'SUPERSEDED';
+  createdAt: string;
+  decidedAt: string | null;
+  decisionNote: string | null;
 }

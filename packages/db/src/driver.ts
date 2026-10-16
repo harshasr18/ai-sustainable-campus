@@ -8,6 +8,7 @@
  * unique indexes, ON CONFLICT semantics, FOR UPDATE locking and advisory locks.
  * That is why identical SQL is safe on both.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { PGlite } from '@electric-sql/pglite';
 import type { Pool, PoolClient } from 'pg';
 
@@ -121,34 +122,62 @@ export async function createPgliteDb(dataDir?: string): Promise<Db> {
    *
    * The rule it enforces: inside `withTransaction`, use ONLY the provided `tx` handle.
    */
-  let transactionDepth = 0;
+  /*
+   * Phase 5 fix — CONCURRENT REQUESTS. This used to be a single process-wide counter, so a
+   * query from ANY other request while one request held a transaction threw — a random 500
+   * for whoever came second (two HODs, a student and the analysis worker, ...). Found by a
+   * concurrent duplicate-merge test. The misuse the guard exists for is narrower: the outer
+   * handle used from INSIDE the transaction's own callback (that would wait on itself
+   * forever). AsyncLocalStorage tells the two apart: the transaction's own async context is
+   * refused, everyone else waits their turn on a FIFO lock. PGlite has one connection, so
+   * serialising costs no throughput.
+   */
+  const insideTransaction = new AsyncLocalStorage<true>();
+  let tail: Promise<void> = Promise.resolve();
+  const acquire = (): Promise<() => void> => {
+    let release!: () => void;
+    const mine = new Promise<void>((resolve) => (release = resolve));
+    const previous = tail;
+    tail = previous.then(() => mine);
+    return previous.then(() => release);
+  };
 
   return {
     engine: 'pglite',
     async query<T>(sql: string, params?: unknown[]): Promise<QueryResult<T>> {
-      if (transactionDepth > 0) {
+      if (insideTransaction.getStore()) {
         throw new Error(
           'Deadlock prevented: a query was issued on the outer database handle while a ' +
             'transaction was open. PGlite has a single connection, so this would hang forever. ' +
             'Inside withTransaction(tx => ...) use the provided `tx` handle instead of the outer db.',
         );
       }
-      const r = await db.query<T>(sql, params as never[] | undefined);
-      return { rows: r.rows, rowCount: r.affectedRows ?? r.rows.length };
+      const release = await acquire();
+      try {
+        const r = await db.query<T>(sql, params as never[] | undefined);
+        return { rows: r.rows, rowCount: r.affectedRows ?? r.rows.length };
+      } finally {
+        release();
+      }
     },
     async exec(sql: string) {
-      if (transactionDepth > 0) {
+      if (insideTransaction.getStore()) {
         throw new Error('Deadlock prevented: exec() called on the outer handle inside a transaction.');
       }
-      await db.exec(sql);
+      const release = await acquire();
+      try {
+        await db.exec(sql);
+      } finally {
+        release();
+      }
     },
     async withTransaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
-      if (transactionDepth > 0) {
+      if (insideTransaction.getStore()) {
         throw new Error('Nested transactions are not supported. Use the existing `tx` handle.');
       }
-      transactionDepth += 1;
+      const release = await acquire();
       try {
-        return await db.transaction(async (tx) => {
+        return await insideTransaction.run(true, () => db.transaction(async (tx) => {
           const handle: Tx = {
             async query<T>(sql: string, params?: unknown[]) {
               const r = await tx.query<T>(sql, params as never[] | undefined);
@@ -159,9 +188,9 @@ export async function createPgliteDb(dataDir?: string): Promise<Db> {
             },
           };
           return fn(handle);
-        });
+        }));
       } finally {
-        transactionDepth -= 1;
+        release();
       }
     },
     async close() {

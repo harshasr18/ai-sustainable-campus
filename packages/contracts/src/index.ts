@@ -15,7 +15,13 @@ export const RoleSchema = z.enum(['STUDENT', 'HOD', 'ADMIN']);
 export type Role = z.infer<typeof RoleSchema>;
 
 /** Lifecycle from the brief, Section 3 Step D. Extended only by explicit revision. */
-export const IssueStatusSchema = z.enum(['SUBMITTED', 'APPROVED', 'IN_PROGRESS', 'RESOLVED']);
+/**
+ * 'DUPLICATE' (shown as "Merged") is terminal and set ONLY when an HOD/ADMIN confirms that
+ * this ticket is the same defect as another; its reports then belong to that master issue.
+ */
+export const IssueStatusSchema = z.enum(['SUBMITTED', 'APPROVED', 'IN_PROGRESS', 'RESOLVED', 'DUPLICATE']);
+/** Statuses that are finished — neither actionable nor overdue. */
+export const CLOSED_ISSUE_STATUSES = ['RESOLVED', 'DUPLICATE'] as const;
 export type IssueStatus = z.infer<typeof IssueStatusSchema>;
 
 export const SeveritySchema = z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
@@ -95,6 +101,10 @@ export const ERROR_CODES = [
   'RATE_LIMITED',
   'NOT_IMPLEMENTED',
   'INTERNAL_ERROR',
+  // Phase 5 — capture sessions (server-issued, single-use photo tickets)
+  'CAPTURE_SESSION_INVALID',
+  'CAPTURE_SESSION_EXPIRED',
+  'EVIDENCE_REUSED',
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -261,6 +271,8 @@ export const IssueSchema = z.object({
   startedAt: z.iso.datetime().nullable(),
   resolvedAt: z.iso.datetime().nullable(),
   resolutionNote: z.string().nullable(),
+  /** Set only when status is DUPLICATE: the master issue this ticket was merged into. */
+  duplicateOfIssueId: z.uuid().nullable().optional(),
   dueAt: z.iso.datetime(),
   /** Derived from the configurable overdue threshold, never hardcoded in clients. */
   overdue: z.boolean(),

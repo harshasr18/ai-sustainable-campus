@@ -43,13 +43,14 @@ export const TRANSITIONS: readonly TransitionRule[] = Object.freeze([
 ]);
 
 /** RESOLVED is terminal in Phase 1. */
-export const TERMINAL_STATUSES: readonly IssueStatus[] = Object.freeze(['RESOLVED']);
+export const TERMINAL_STATUSES: readonly IssueStatus[] = Object.freeze(['RESOLVED', 'DUPLICATE']);
 
 export const ALL_STATUSES: readonly IssueStatus[] = Object.freeze([
   'SUBMITTED',
   'APPROVED',
   'IN_PROGRESS',
   'RESOLVED',
+  'DUPLICATE',
 ]);
 
 export function findTransition(from: IssueStatus, to: IssueStatus): TransitionRule | undefined {

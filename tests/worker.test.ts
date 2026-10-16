@@ -122,19 +122,74 @@ describe('Analysis worker [MOCKED analyzer — queue mechanics only]', () => {
     expect(await analysesFor(reportId)).toEqual(['NEEDS_HUMAN_REVIEW']);
   });
 
-  it('never credits tokens and never changes validation_status — the AI cannot approve', async () => {
+  /*
+   * The AI-validation policy (Phase 5). Business rule: 10 tokens for every successfully
+   * AI-validated submission. The SERVER decides, inside the analysis transaction, from
+   * schema-validated facts: SUCCEEDED + category agreement + still PENDING. The analyzer is a
+   * MOCK here — these tests exercise the policy and the ledger, not the model.
+   */
+  it('a SUCCEEDED analysis that agrees with the student credits exactly 10 tokens, once', async () => {
     const reportId = await freshReport();
     const { analyzer } = stubAnalyzer('succeed');
     await createAnalysisWorker({ db: ctx.db, ai: analyzer, intervalMs: 1000, maxAttempts: 3, log: silentLog }).sweep();
 
-    expect(await creditsFor(reportId)).toBe(0);
-    const r = await ctx.db.query<{ validation_status: string; ai_confidence: number }>(
-      `SELECT validation_status, ai_confidence FROM reports WHERE id = $1`,
+    expect(await creditsFor(reportId)).toBe(1);
+    const r = await ctx.db.query<{ validation_status: string; ai_confidence: number; amount: number; created_by_user_id: string | null }>(
+      `SELECT r.validation_status, r.ai_confidence, t.amount, t.created_by_user_id
+         FROM reports r JOIN token_transactions t ON t.report_id = r.id WHERE r.id = $1`,
       [reportId],
     );
-    expect(r.rows[0]!.validation_status).toBe('PENDING');
-    // The finding IS recorded beside the report — just not acted on.
+    expect(r.rows[0]!.validation_status).toBe('AI_VALIDATED');
+    expect(r.rows[0]!.amount).toBe(10);
+    expect(r.rows[0]!.created_by_user_id).toBeNull(); // the server's policy, not a person
     expect(r.rows[0]!.ai_confidence).toBeCloseTo(0.91);
+  });
+
+  it('re-running analysis on a validated report never credits a second time', async () => {
+    const reportId = await freshReport();
+    const { analyzer } = stubAnalyzer('succeed');
+    await createAnalysisWorker({ db: ctx.db, ai: analyzer, intervalMs: 1000, maxAttempts: 3, log: silentLog }).sweep();
+    // Force a second pipeline run directly, as the manual /analyze route would.
+    const { runAnalysis } = await import('../apps/api/src/routes/analysis.js');
+    const again = await runAnalysis(ctx.db, analyzer, ctx.ids.demoWorkspaceId, reportId, null, 'DEMO');
+    expect(again.autoValidated).toBe(false);
+    expect(await creditsFor(reportId)).toBe(1);
+  });
+
+  it('NEEDS_HUMAN_REVIEW and FAILED analyses credit nothing and leave the report PENDING', async () => {
+    for (const behaviour of ['review', 'fail'] as const) {
+      const reportId = await freshReport();
+      const { analyzer } = stubAnalyzer(behaviour);
+      await createAnalysisWorker({ db: ctx.db, ai: analyzer, intervalMs: 1000, maxAttempts: 3, log: silentLog }).sweep();
+      expect(await creditsFor(reportId)).toBe(0);
+      const r = await ctx.db.query<{ validation_status: string }>(`SELECT validation_status FROM reports WHERE id = $1`, [reportId]);
+      expect(r.rows[0]!.validation_status).toBe('PENDING');
+    }
+  });
+
+  it('a report an HOD already REJECTED is never credited by a later analysis', async () => {
+    const reportId = await freshReport();
+    await ctx.db.query(`UPDATE reports SET validation_status = 'REJECTED' WHERE id = $1`, [reportId]);
+    const { analyzer } = stubAnalyzer('succeed');
+    const { runAnalysis } = await import('../apps/api/src/routes/analysis.js');
+    const out = await runAnalysis(ctx.db, analyzer, ctx.ids.demoWorkspaceId, reportId, null, 'DEMO');
+    expect(out.status).toBe('SUCCEEDED');
+    expect(out.autoValidated).toBe(false);
+    expect(await creditsFor(reportId)).toBe(0);
+  });
+
+  it('a duplicate-LINKED report is credited too — each genuine submission earns its own 10', async () => {
+    const { spotId } = await createSpot(ctx);
+    const first = await submitReport(ctx, ctx.tokens.student, { spotId });
+    const second = await submitReport(ctx, ctx.tokens.student2, { spotId });
+    expect(second.json.duplicateOfExistingIssue).toBe(true);
+    expect(second.json.issueId).toBe(first.json.issueId);
+    const { analyzer } = stubAnalyzer('succeed');
+    const worker = createAnalysisWorker({ db: ctx.db, ai: analyzer, intervalMs: 1000, maxAttempts: 3, log: silentLog });
+    await worker.sweep();
+    await worker.sweep();
+    expect(await creditsFor(first.json.reportId)).toBe(1);
+    expect(await creditsFor(second.json.reportId)).toBe(1);
   });
 
   it('retries a failing report up to the attempt limit, then stops for good', async () => {

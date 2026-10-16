@@ -36,6 +36,11 @@ export interface AppConfig {
   sessionTtlHours: number;
   evidenceDir: string;
   maxEvidenceBytes: number;
+  /**
+   * Minutes a server-issued capture ticket stays valid (0009). Covers the time from the
+   * shutter press to the submit button: choosing block, spot and category. Default 15.
+   */
+  captureSessionTtlMinutes?: number;
   logLevel: string;
   /** Global requests/minute per IP. */
   rateLimitMax: number;
@@ -158,6 +163,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     sessionTtlHours: intFromEnv('SESSION_TTL_HOURS', 8),
     evidenceDir: env.EVIDENCE_DIR?.trim() || path.resolve(process.cwd(), 'storage/evidence'),
     maxEvidenceBytes: intFromEnv('MAX_EVIDENCE_BYTES', 8 * 1024 * 1024),
+    captureSessionTtlMinutes: intFromEnv('CAPTURE_SESSION_TTL_MINUTES', 15),
     logLevel: env.LOG_LEVEL?.trim() || (nodeEnv === 'test' ? 'silent' : 'info'),
     rateLimitMax: intFromEnv('RATE_LIMIT_MAX', 300),
     loginRateLimitMax: intFromEnv('LOGIN_RATE_LIMIT_MAX', 10),

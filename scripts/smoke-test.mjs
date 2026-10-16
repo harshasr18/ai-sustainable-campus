@@ -15,6 +15,7 @@
  * against an in-process database. This script proves the assembled SERVER works
  * over the wire, including multipart upload and the real storage adapter.
  */
+import { randomBytes } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 
@@ -132,8 +133,14 @@ const main = async () => {
 
   // --------------------------------------------------------- report upload
   console.log('\nSTUDENT REPORTING (fresh camera photo, multipart)');
-  const submit = async (token, { title, spot, category }) => {
+  // Every submission needs a server-issued capture ticket (migration 0009), requested by
+  // the web app when the shutter is pressed. Photos get a random suffix so each one is a
+  // distinct image (the server refuses byte-identical photographs).
+  const ticket = async (token) => (await api('POST', '/v1/reports/capture-sessions', { token })).body.captureToken;
+  const uniquePhoto = () => Buffer.concat([PHOTO, randomBytes(12)]);
+  const submit = async (token, { title, spot, category, captureToken, photo }) => {
     const form = new FormData();
+    form.set('captureToken', captureToken ?? (await ticket(token)));
     form.set('blockId', blockId);
     form.set('spotId', spot);
     form.set('selectedCategoryId', category);
@@ -141,7 +148,7 @@ const main = async () => {
     form.set('description', 'Steady drip observed; floor becoming slippery.');
     form.set('latitude', '12.8612');
     form.set('longitude', '77.5525');
-    form.set('photo', new Blob([PHOTO], { type: 'image/png' }), 'campus-capture.png');
+    form.set('photo', new Blob([photo ?? uniquePhoto()], { type: 'image/png' }), 'campus-capture.png');
     return api('POST', '/v1/reports', { token, form });
   };
 
@@ -150,6 +157,24 @@ const main = async () => {
   check('tokens NOT awarded at submission', r1.body.tokensAwarded === 0, 'trusted validation required first');
   const issueId = r1.body.issueId;
   const reportId = r1.body.reportId;
+
+  const replayTicket = await ticket(student);
+  const replayPhoto = uniquePhoto();
+  const rA = await submit(student, { title: 'Replay check', spot: spotId, category: leakCat, captureToken: replayTicket, photo: replayPhoto });
+  const rB = await submit(student, { title: 'Replay check', spot: spotId, category: leakCat, captureToken: replayTicket, photo: replayPhoto });
+  check(
+    'repeated submit with one capture ticket returns the same report',
+    rA.status === 200 && rB.status === 200 && rA.body.reportId === rB.body.reportId && rB.body.replayed === true,
+    `replayed=${rB.body.replayed}`,
+  );
+  const noTicket = new FormData();
+  noTicket.set('blockId', blockId);
+  noTicket.set('spotId', spotId);
+  noTicket.set('selectedCategoryId', leakCat);
+  noTicket.set('title', 'Upload without a camera ticket');
+  noTicket.set('photo', new Blob([uniquePhoto()], { type: 'image/png' }), 'gallery.png');
+  const noTicketRes = await api('POST', '/v1/reports', { token: student, form: noTicket });
+  check('upload without a capture ticket refused', noTicketRes.status === 400, noTicketRes.body?.error?.code);
 
   const noPhoto = new FormData();
   noPhoto.set('blockId', blockId);
@@ -164,6 +189,7 @@ const main = async () => {
   badType.set('spotId', spotId);
   badType.set('selectedCategoryId', leakCat);
   badType.set('title', 'Attempting a non-image upload');
+  badType.set('captureToken', await ticket(student));
   badType.set('photo', new Blob([Buffer.from('<html>not an image</html>')], { type: 'image/png' }), 'fake.png');
   const badTypeRes = await api('POST', '/v1/reports', { token: student, form: badType });
   check('non-image payload refused (magic-byte check)', badTypeRes.status === 400);

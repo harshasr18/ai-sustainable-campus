@@ -79,6 +79,10 @@ async function main() {
     null,
     { timeout: 15000 },
   );
+  // Chromium's fake camera plays a time-based test pattern, so capturing at the same moment
+  // after start can reproduce a previous run's exact bytes — which the server rightly refuses
+  // (EVIDENCE_REUSED). A random settle time makes that rare; the branch below handles it.
+  await student.waitForTimeout(400 + Math.floor(Math.random() * 2500));
   await capture.click();
   await student.getByRole('button', { name: /retake/i }).waitFor({ timeout: 10000 });
   check('photograph captured from the live camera stream', true);
@@ -105,12 +109,34 @@ async function main() {
     timeout: 30000,
   });
   await enabledPrimary(student).last().click(); // submit
-  const submitResponse = await submitted;
-  const submitBody = await submitResponse.json();
+  let submitResponse = await submitted;
+  let submitBody = await submitResponse.json();
+  if (submitResponse.status() === 409 && submitBody?.error?.code === 'EVIDENCE_REUSED') {
+    // The real recovery path: the student is told why and retakes; nothing else is lost.
+    await student.getByText('The report was not submitted').waitFor({ timeout: 10000 });
+    const retake = student.getByRole('button', { name: 'Retake photo' });
+    check('a reused photograph is refused with a visible reason and a Retake button', await retake.isVisible(), submitBody.error.code);
+    await retake.click();
+    await capture.waitFor({ state: 'visible', timeout: 15000 });
+    await student.waitForFunction(
+      () => !document.querySelector('[aria-label="Capture photograph"]')?.hasAttribute('disabled'),
+      null,
+      { timeout: 15000 },
+    );
+    await student.waitForTimeout(1500 + Math.floor(Math.random() * 2500));
+    await capture.click();
+    await student.getByRole('button', { name: /retake/i }).waitFor({ timeout: 10000 });
+    for (let i = 0; i < 3; i += 1) await enabledPrimary(student).last().click(); // location → category → review (kept)
+    const resubmitted = student.waitForResponse((r) => r.url().endsWith('/v1/reports') && r.request().method() === 'POST', { timeout: 30000 });
+    await enabledPrimary(student).last().click(); // submit again with a fresh ticket
+    submitResponse = await resubmitted;
+    submitBody = await submitResponse.json();
+  }
   if (!check('backend accepted the report', submitResponse.status() === 200, `HTTP ${submitResponse.status()}`)) {
     console.log('        server said:', JSON.stringify(submitBody.error ?? submitBody));
+    await student.getByText('The report was not submitted').waitFor({ timeout: 5000 }).catch(() => {});
     const shown = await student.locator('main').innerText();
-    console.log('        UI shows:', shown.split('\n').filter((l) => /could not|error|failed|not sent/i.test(l)).slice(0, 3).join(' / '));
+    console.log('        UI shows:', shown.split('\n').filter((l) => /could not|not submitted|error|failed|not sent/i.test(l)).slice(0, 3).join(' / '));
     await student.screenshot({ path: `${OUT}/3-submit-failed.png` });
     await browser.close();
     process.exit(1);
@@ -146,7 +172,14 @@ async function main() {
     check('AI is unconfigured, so the report honestly stays unanalysed', !analysis, 'provider unconfigured');
   }
   const afterAnalysis = (await api(`/v1/tokens/balance`, studentToken)).body.balance;
-  check('no tokens credited by the AI', afterAnalysis === balanceBefore, `${balanceBefore} -> ${afterAnalysis}`);
+  // Phase 5 policy: the SERVER credits 10 only when the model is confident (SUCCEEDED) AND agrees
+  // with the student's category; anything needing review credits nothing until a person decides.
+  const autoCredited = analysis?.status === 'SUCCEEDED' && analysis?.categoryMatchesStudentSelection === true;
+  check(
+    autoCredited ? 'confident, agreeing AI result credited exactly 10 by the server' : 'an analysis needing review credited nothing',
+    afterAnalysis === balanceBefore + (autoCredited ? 10 : 0),
+    `${balanceBefore} -> ${afterAnalysis} (${analysis?.status ?? 'no analysis'})`,
+  );
 
   /* ------------------------------------------------------------ 3. HOD */
   console.log('\n3. HOD VALIDATES, APPROVES, STARTS AND RESOLVES — IN THE CONSOLE');

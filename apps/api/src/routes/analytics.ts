@@ -73,7 +73,12 @@ export function registerAnalyticsRoutes(app: FastifyInstance, deps: { db: Db }):
        * accidentally be computed over a wider scope than the caller may see.
        */
       const reportScope: string[] = ['r.workspace_id = $1'];
-      const issueScope: string[] = ['i.workspace_id = $1'];
+      const issueScope: string[] = [
+        'i.workspace_id = $1',
+        // A merged ('DUPLICATE') ticket is not a separate defect — its reports now belong to
+        // the master issue — so it is excluded from every issue count.
+        "i.status <> 'DUPLICATE'",
+      ];
       const params: unknown[] = [actor.workspaceId];
 
       if (isStudent) {
@@ -113,10 +118,10 @@ export function registerAnalyticsRoutes(app: FastifyInstance, deps: { db: Db }):
            count(*) FILTER (WHERE i.status = 'APPROVED')::int                   AS approved,
            count(*) FILTER (WHERE i.status = 'IN_PROGRESS')::int                AS in_progress,
            count(*) FILTER (WHERE i.status = 'RESOLVED')::int                   AS resolved,
-           count(*) FILTER (WHERE i.status <> 'RESOLVED')::int                  AS open,
-           count(*) FILTER (WHERE i.status <> 'RESOLVED' AND i.due_at < now())::int AS overdue,
+           count(*) FILTER (WHERE i.status NOT IN ('RESOLVED','DUPLICATE'))::int AS open,
+           count(*) FILTER (WHERE i.status NOT IN ('RESOLVED','DUPLICATE') AND i.due_at < now())::int AS overdue,
            count(*) FILTER (WHERE i.claimed_by_user_id IS NULL
-                              AND i.status <> 'RESOLVED')::int                   AS unclaimed
+                              AND i.status NOT IN ('RESOLVED','DUPLICATE'))::int AS unclaimed
          FROM issues i WHERE ${I}`,
         params,
       );
@@ -156,9 +161,9 @@ export function registerAnalyticsRoutes(app: FastifyInstance, deps: { db: Db }):
       const byBlock = await db.query<Counts>(
         `SELECT b.id AS block_id, b.official_name AS block_name,
                 count(*)::int                                                   AS total,
-                count(*) FILTER (WHERE i.status <> 'RESOLVED')::int              AS open,
+                count(*) FILTER (WHERE i.status NOT IN ('RESOLVED','DUPLICATE'))::int AS open,
                 count(*) FILTER (WHERE i.status = 'RESOLVED')::int               AS resolved,
-                count(*) FILTER (WHERE i.status <> 'RESOLVED' AND i.due_at < now())::int AS overdue
+                count(*) FILTER (WHERE i.status NOT IN ('RESOLVED','DUPLICATE') AND i.due_at < now())::int AS overdue
          FROM issues i JOIN campus_blocks b ON b.id = i.block_id
          WHERE ${I}
          GROUP BY b.id, b.official_name
@@ -169,7 +174,7 @@ export function registerAnalyticsRoutes(app: FastifyInstance, deps: { db: Db }):
       const byCategory = await db.query<Counts>(
         `SELECT c.id AS category_id, c.name AS category_name,
                 count(*)::int                                                   AS total,
-                count(*) FILTER (WHERE i.status <> 'RESOLVED')::int              AS open,
+                count(*) FILTER (WHERE i.status NOT IN ('RESOLVED','DUPLICATE'))::int AS open,
                 count(*) FILTER (WHERE i.status = 'RESOLVED')::int               AS resolved
          FROM issues i JOIN issue_categories c ON c.id = i.category_id
          WHERE ${I}

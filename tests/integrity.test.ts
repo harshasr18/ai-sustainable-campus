@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { AI_CONFIG_DEFAULTS } from '@campus/db';
-import {
+import { issueCaptureToken,
   auth,
   createTestContext,
   errorCode,
@@ -86,6 +86,7 @@ describe('Evidence upload validation', () => {
         spotId: ctx.ids.spotId,
         selectedCategoryId: ctx.ids.categoryId,
         title: 'Fake photo attempt',
+        captureToken: await issueCaptureToken(ctx, ctx.tokens.student),
       },
       { data: Buffer.from('<html><script>alert(1)</script></html>'), contentType: 'image/jpeg', filename: 'evil.jpg' },
     );
@@ -134,6 +135,7 @@ describe('Evidence upload validation', () => {
         spotId: ctx.ids.spotId,
         selectedCategoryId: ctx.ids.categoryId,
         title: 'Path traversal attempt',
+        captureToken: await issueCaptureToken(ctx, ctx.tokens.student),
       },
       { data: TINY_PNG, filename: '../../../../etc/passwd.png' },
     );

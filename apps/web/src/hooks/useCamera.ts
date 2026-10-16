@@ -45,6 +45,10 @@ export interface CapturedPhoto {
   width: number;
   height: number;
   bytes: number;
+  /** Device clock at the moment the frame was drawn. Sent as untrusted `capturedAt`. */
+  capturedAt: string;
+  /** What the browser reports the active camera to be ('environment', 'user'), if anything. */
+  facingMode: string | null;
 }
 
 export interface UseCameraResult {
@@ -179,6 +183,8 @@ export function useCamera(): UseCameraResult {
     }
 
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const capturedAt = new Date().toISOString();
+    const facingMode = streamRef.current?.getVideoTracks()[0]?.getSettings().facingMode ?? null;
 
     const blob = await new Promise<Blob | null>((resolve) =>
       // JPEG at 0.9: a photograph of a corridor, not a document scan. Keeps a 1080p capture
@@ -197,7 +203,7 @@ export function useCamera(): UseCameraResult {
     const previewUrl = URL.createObjectURL(blob);
     photoUrlRef.current = previewUrl;
 
-    setPhoto({ blob, previewUrl, width: canvas.width, height: canvas.height, bytes: blob.size });
+    setPhoto({ blob, previewUrl, width: canvas.width, height: canvas.height, bytes: blob.size, capturedAt, facingMode });
     setStatus('captured');
     releaseStream();
   }, [releaseStream]);

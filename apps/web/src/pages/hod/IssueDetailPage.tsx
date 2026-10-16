@@ -25,11 +25,13 @@
  * server half is the row lock, and it is the half that actually protects the data.
  */
 
+import { DuplicateSuggestionList } from '../../components/DuplicateSuggestions.js';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api, ApiError } from '../../lib/api.js';
 import { useAsync } from '../../lib/useAsync.js';
 import type {
+  DuplicateSuggestion,
   IssueDetailResponse,
   LinkedReport,
   Paginated,
@@ -88,6 +90,13 @@ export function IssueDetailPage() {
     [],
   );
 
+  // Possible duplicates involving this ticket (either side). HOD/ADMIN only on the server.
+  const suggestions = useAsync(
+    (signal) =>
+      api.get<{ items: DuplicateSuggestion[] }>(`/v1/issues/${issueId}/duplicate-suggestions`, { signal }),
+    [issueId],
+  );
+
   /** Runs a mutation, surfaces its real result, and refreshes from the server. */
   async function act(label: string, run: () => Promise<unknown>, successMessage: string) {
     setBusy(label);
@@ -122,7 +131,9 @@ export function IssueDetailPage() {
   }
 
   const base = user?.role === 'ADMIN' ? '/admin/issues' : '/hod/issues';
-  const claimable = isStaff && issue.status !== 'RESOLVED' && !issue.claimedByUserId;
+  const claimable =
+    isStaff && issue.status !== 'RESOLVED' && issue.status !== 'DUPLICATE' && !issue.claimedByUserId;
+  const suggestionItems = suggestions.data?.items ?? [];
   const claimedByMe = issue.claimedByUserId === user?.id;
 
   return (
@@ -161,6 +172,39 @@ export function IssueDetailPage() {
         </div>
       )}
 
+      {issue.status === 'DUPLICATE' && (
+        <div className="mb-5">
+          <InlineAlert variant="info" title="Merged into another issue">
+            An HOD confirmed this was the same defect as another ticket. Its reports — each with its
+            own photo and token credit — now belong to the master issue, and the work is tracked there.{' '}
+            {issue.duplicateOfIssueId && <Link to={`${base}/${issue.duplicateOfIssueId}`}>Open the master issue →</Link>}
+          </InlineAlert>
+        </div>
+      )}
+
+      {isStaff && (suggestions.error || suggestionItems.length > 0) && (
+        <div className="mb-5">
+          <Card
+            title="Possible duplicates"
+            subtitle="Found by a rule over block, spot and category — never by photo similarity alone. Nothing merges until you confirm."
+          >
+            {suggestions.error ? (
+              <ErrorPane error={suggestions.error} onRetry={suggestions.reload} />
+            ) : (
+              <DuplicateSuggestionList
+                suggestions={suggestionItems}
+                issueLinkBase={base}
+                showSource
+                onDecided={() => {
+                  suggestions.reload();
+                  detail.reload();
+                }}
+              />
+            )}
+          </Card>
+        </div>
+      )}
+
       {issue.status === 'RESOLVED' && issue.resolutionNote && (
         <div className="mb-5">
           <InlineAlert variant="success" title="Resolved">
@@ -180,7 +224,7 @@ export function IssueDetailPage() {
           <Card
             title="Reports on this ticket"
             subtitle={
-              linkedReports.length === linkedReports.length && (detail.data?.linkedReportCount ?? 0) > 1
+              (detail.data?.linkedReportCount ?? 0) > 1
                 ? `${detail.data!.linkedReportCount} reports — merged so the defect is fixed once.`
                 : 'Each report keeps its own photograph, category and token credit.'
             }

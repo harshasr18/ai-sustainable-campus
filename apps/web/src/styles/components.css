@@ -1828,3 +1828,44 @@ a.stat:hover {
   left: var(--space-3);
   z-index: 2;
 }
+
+/* Duplicate suggestion (Phase 5) — a possible match awaiting an HOD decision. */
+.dup-suggestion {
+  border: 1px solid var(--border, #d9dee5);
+  border-left: 4px solid var(--warning, #b54708);
+  border-radius: 8px;
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  background: var(--surface, #fff);
+}
+
+/* Campus twin — flat fallback when WebGL is unavailable (Phase 5, F8). */
+.twin--flat {
+  height: auto;
+  min-height: 0;
+  padding: var(--space-4, 1rem);
+  background: var(--surface-sunken);
+}
+.twin-flat__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: var(--space-3, 0.75rem);
+}
+.twin-flat__cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  padding: var(--space-3, 0.75rem);
+  border: 1px solid var(--border);
+  border-top: 6px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  min-height: 44px;
+}
+.twin-flat__cell--selected {
+  box-shadow: var(--focus-ring);
+  border-color: var(--border-strong, currentColor);
+}

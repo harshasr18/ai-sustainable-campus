@@ -38,6 +38,7 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: 'APPROVED', label: 'Approved' },
   { value: 'IN_PROGRESS', label: 'In progress' },
   { value: 'RESOLVED', label: 'Resolved' },
+  { value: 'DUPLICATE', label: 'Merged (duplicate)' },
 ];
 
 export function IssuesPage() {

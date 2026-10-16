@@ -8,7 +8,7 @@
  * That means the tests exercise the real SQL, the real constraints, the real state
  * machine and the real authorization — so a passing suite is actual evidence.
  */
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -266,6 +266,10 @@ export async function submitReport(
     longitude: number;
     capturedAt: string;
     photo: Buffer;
+    /** A specific ticket; `null` omits it. Default: a fresh ticket from the API. */
+    captureToken: string | null;
+    /** Send the photo bytes exactly as given (no uniquifying suffix). Default false. */
+    exactPhoto: boolean;
   }> = {},
 ) {
   const fields: Record<string, string> = {
@@ -279,7 +283,18 @@ export async function submitReport(
     ...(overrides.capturedAt !== undefined ? { capturedAt: overrides.capturedAt } : {}),
   };
 
-  const body = multipart(fields, { data: overrides.photo ?? TINY_PNG });
+  // Every real submission carries a server-issued capture ticket (migration 0009).
+  const captureToken =
+    overrides.captureToken === undefined ? await issueCaptureToken(ctx, token) : overrides.captureToken;
+  if (captureToken !== null) fields.captureToken = captureToken;
+
+  // The server rejects byte-identical photographs (EVIDENCE_REUSED). Tests reuse one tiny
+  // image, so by default a few random bytes are appended after the image data — decoders
+  // ignore trailing bytes, and each test submission is then a distinct photograph.
+  const base = overrides.photo ?? TINY_PNG;
+  const data = overrides.exactPhoto ? base : Buffer.concat([base, randomBytes(12)]);
+
+  const body = multipart(fields, { data });
   const res = await ctx.app.inject({
     method: 'POST',
     url: '/v1/reports',
@@ -287,6 +302,13 @@ export async function submitReport(
     payload: body.payload,
   });
   return { res, json: res.statusCode < 400 ? res.json() : null };
+}
+
+/** Requests a capture ticket exactly as the web app does when the shutter is pressed. */
+export async function issueCaptureToken(ctx: TestContext, token: string): Promise<string> {
+  const res = await ctx.app.inject({ method: 'POST', url: '/v1/reports/capture-sessions', headers: auth(token) });
+  if (res.statusCode !== 200) throw new Error(`capture-sessions returned ${res.statusCode}: ${res.body}`);
+  return (res.json() as { captureToken: string }).captureToken;
 }
 
 /**

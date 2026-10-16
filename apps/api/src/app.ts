@@ -29,6 +29,7 @@ import { registerAdminRoutes } from './routes/admin.js';
 import { registerIntegrationRoutes } from './routes/integrations.js';
 import { registerAnalysisRoutes } from './routes/analysis.js';
 import { registerAnalyticsRoutes } from './routes/analytics.js';
+import { registerDuplicateRoutes } from './routes/duplicates.js';
 import { registerConsoleRoute } from './routes/console.js';
 
 export interface BuildAppOptions {
@@ -160,13 +161,19 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
   registerAuthRoutes(app, { db, config });
   registerCampusRoutes(app, { db });
-  registerReportRoutes(app, { db, storage, maxEvidenceBytes: config.maxEvidenceBytes });
+  registerReportRoutes(app, {
+    db,
+    storage,
+    maxEvidenceBytes: config.maxEvidenceBytes,
+    captureSessionTtlMinutes: config.captureSessionTtlMinutes ?? 15,
+  });
   registerIssueRoutes(app, { db });
   registerTokenRoutes(app, { db });
   registerAdminRoutes(app, { db });
   registerIntegrationRoutes(app, { db, ai, realtimeEnabled: options.realtimeEnabled ?? false });
   registerAnalysisRoutes(app, { db, ai });
   registerAnalyticsRoutes(app, { db });
+  registerDuplicateRoutes(app, { db });
   // Development-only browser console at `/`. Never registered in production.
   registerConsoleRoute(app, { config });
 

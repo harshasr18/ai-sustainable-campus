@@ -37,7 +37,7 @@
  * between a demo aid and a false claim.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Canvas, extend, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { OrbitControls as ThreeOrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -153,7 +153,92 @@ const STATUS_COLOURS = {
   none: '#b9c0c3',
 } as const;
 
+/**
+ * WEBGL FALLBACK (Phase 5 — audit finding F8).
+ *
+ * With WebGL disabled (old GPU, blocklisted driver, remote desktop, hardened browser) the
+ * <Canvas> threw during mount and, with no boundary, React unmounted the WHOLE application:
+ * the admin saw a blank page and lost the navigation too. Three layers now prevent that:
+ *   1. a capability check before the Canvas is ever mounted;
+ *   2. an error boundary around the Canvas for failures the check cannot predict;
+ *   3. a `webglcontextlost` listener for a context the GPU takes away later.
+ * Each falls back to the same data drawn as a flat grid of buttons, so selection still works.
+ */
+function detectWebGL(): boolean {
+  try {
+    const canvas = document.createElement('canvas');
+    return Boolean(canvas.getContext('webgl2') ?? canvas.getContext('webgl'));
+  } catch {
+    return false;
+  }
+}
+
+class TwinBoundary extends Component<{ fallback: ReactNode; children: ReactNode }, { failed: boolean }> {
+  override state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  override componentDidCatch(error: unknown) {
+    // Logged for the developer console only; the user sees the 2D fallback, not a stack.
+    console.warn('Campus twin: 3D view failed, showing the 2D fallback.', error);
+  }
+  override render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
+
+interface LayoutEntry {
+  block: Block;
+  stats: { open: number; total: number; overdue: number } | undefined;
+  colour: string;
+}
+
+function FlatTwin({
+  layout,
+  selected,
+  onSelect,
+  reason,
+}: {
+  layout: LayoutEntry[];
+  selected: string | null;
+  onSelect: (id: string) => void;
+  reason: string;
+}) {
+  return (
+    <div className="twin twin--flat" data-testid="twin-fallback">
+      <p className="small mt-0 mb-3">
+        <strong>3D view unavailable.</strong> {reason} The same blocks and counts are shown as a flat
+        schematic grid below.
+      </p>
+      <div className="twin-flat__grid" role="list">
+        {layout.map((entry) => (
+          <button
+            key={entry.block.id}
+            type="button"
+            role="listitem"
+            className={`twin-flat__cell${selected === entry.block.id ? ' twin-flat__cell--selected' : ''}`}
+            style={{ borderTopColor: entry.colour }}
+            aria-pressed={selected === entry.block.id}
+            onClick={() => onSelect(entry.block.id)}
+          >
+            <strong>{entry.block.officialName}</strong>
+            <span className="small muted">
+              {entry.stats ? `${entry.stats.open} open · ${entry.stats.total} total` : 'No issues recorded'}
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function CampusTwinPage() {
+  /** Checked once; a later context loss flips it off too. */
+  const [webgl, setWebgl] = useState<{ ok: boolean; reason: string }>(() =>
+    detectWebGL()
+      ? { ok: true, reason: '' }
+      : { ok: false, reason: 'This browser or device did not provide WebGL.' },
+  );
   const summary = useAsync(
     (signal) => api.get<AnalyticsSummary>('/v1/analytics/summary', { signal }),
     [],
@@ -330,8 +415,27 @@ export function CampusTwinPage() {
 
           <div className="grid-2">
             <div>
+              {!webgl.ok ? (
+                <FlatTwin layout={layout} selected={selected} onSelect={setSelected} reason={webgl.reason} />
+              ) : (
+              <TwinBoundary
+                fallback={
+                  <FlatTwin
+                    layout={layout}
+                    selected={selected}
+                    onSelect={setSelected}
+                    reason="The 3D renderer failed to start on this device."
+                  />
+                }
+              >
               <div className="twin">
                 <Canvas
+                  onCreated={({ gl }) => {
+                    gl.domElement.addEventListener('webglcontextlost', (event) => {
+                      event.preventDefault();
+                      setWebgl({ ok: false, reason: 'The graphics context was lost (GPU reset or memory pressure).' });
+                    });
+                  }}
                   // A fixed camera, a flat light, no shadows: this is a diagram, and lighting
                   // tricks would only make it look more authoritative than it is.
                   camera={{ position: framing.position, fov: CAMERA_FOV }}
@@ -373,6 +477,8 @@ export function CampusTwinPage() {
                   )}
                 </div>
               </div>
+              </TwinBoundary>
+              )}
 
               {/* THE KEY SITS BELOW THE CANVAS, NOT ON TOP OF IT. It used to be absolutely
                   positioned over the scene, and in a real browser it covered a block box and the
@@ -398,8 +504,10 @@ export function CampusTwinPage() {
               </div>
 
               <p className="small muted mt-3">
-                Rendering {layout.length} block{layout.length === 1 ? '' : 's'} with real WebGL. The
-                boxes are drawn from data; no 3D model of this campus has been loaded, because none
+                {webgl.ok
+                  ? `Rendering ${layout.length} block${layout.length === 1 ? '' : 's'} with real WebGL. `
+                  : `Showing ${layout.length} block${layout.length === 1 ? '' : 's'} without WebGL. `}
+                The boxes are drawn from data; no 3D model of this campus has been loaded, because none
                 exists in the project.
               </p>
             </div>

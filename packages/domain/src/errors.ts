@@ -61,4 +61,27 @@ export const workspaceViolation = () =>
   new DomainError('WORKSPACE_VIOLATION', 'This operation is not permitted in the current workspace', 403);
 
 /** 501 — a declared interface whose implementation lands in a later phase. */
+/** The capture ticket is unknown, belongs to someone else, or was never issued. */
+export const captureSessionInvalid = (message = 'This photo was not taken in an active in-app camera session. Retake the photo.') =>
+  new DomainError('CAPTURE_SESSION_INVALID', message, 400);
+
+/** The ticket existed but is older than the configured window. */
+export const captureSessionExpired = (message = 'This photo was taken too long ago. Retake it with the in-app camera.') =>
+  new DomainError('CAPTURE_SESSION_EXPIRED', message, 400);
+
+/** The exact same image bytes are already attached to a report in this campus. */
+export const evidenceReused = (message = 'This exact photograph has already been submitted. Take a new photo.') =>
+  new DomainError('EVIDENCE_REUSED', message, 409);
+
+/**
+ * Raised inside the submission transaction when a concurrent request consumed the same
+ * capture ticket first. The route turns this into an idempotent replay, never a 500.
+ */
+export class CaptureSessionAlreadyConsumed extends Error {
+  constructor(readonly captureSessionId: string) {
+    super('Capture session already consumed');
+    this.name = 'CaptureSessionAlreadyConsumed';
+  }
+}
+
 export const notImplemented = (message = 'Not implemented yet') => new DomainError('NOT_IMPLEMENTED', message, 501);
